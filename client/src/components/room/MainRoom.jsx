@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { io } from 'socket.io-client';
 import axios from 'axios';
+import GameCanvas from '../game/GameCanvas';
 
 export const MainRoom = () => {
   const { user, logout } = useAuth();
@@ -200,50 +201,222 @@ export const MainRoom = () => {
 
   // Handle room state updates
   useEffect(() => {
+    if (socket) {
+      const handleRoomState = (newRoomState) => {
+        console.log('Received room state update:', {
+          roomId: newRoomState._id,
+          roomName: newRoomState.name,
+          participants: newRoomState.participants?.length,
+          currentUser: user?._id,
+          participants: newRoomState.participants?.map(p => ({
+            userId: p.user._id,
+            username: p.user.username,
+            position: p.position
+          }))
+        });
+
+        setRoomState(newRoomState);
+      };
+
+      socket.on('roomState', handleRoomState);
+
+      // Join lobby room if not already in a room
+      if (!roomState?._id && lobbyId) {
+        console.log('Joining lobby room with ID:', lobbyId);
+        socket.emit('joinRoom', lobbyId);
+      }
+
+      return () => {
+        socket.off('roomState', handleRoomState);
+      };
+    }
+  }, [socket, user, roomState, lobbyId]);
+
+  // Handle user joined events
+  useEffect(() => {
+    if (socket) {
+      const handleUserJoined = (data) => {
+        console.log('User joined room:', data);
+        // Room state will be updated via roomState event
+      };
+
+      const handleUserLeft = (data) => {
+        console.log('User left room:', data);
+        // Room state will be updated via roomState event
+      };
+
+      socket.on('userJoined', handleUserJoined);
+      socket.on('userLeft', handleUserLeft);
+
+      return () => {
+        socket.off('userJoined', handleUserJoined);
+        socket.off('userLeft', handleUserLeft);
+      };
+    }
+  }, [socket]);
+
+  // Debug log for room state changes
+  useEffect(() => {
+    if (roomState) {
+      console.log('Room state changed:', {
+        roomId: roomState._id,
+        roomName: roomState.name,
+        participants: roomState.participants?.length,
+        currentUser: user?._id,
+        hasGameCanvas: !!roomState.objects?.length
+      });
+    }
+  }, [roomState, user]);
+
+  // Handle user movement updates from other players
+  useEffect(() => {
     if (!socket) return;
 
-    const handleRoomState = (state) => {
-      console.log('Room state updated:', state);
-      setRoomState(prev => ({
-        ...prev,
-        ...state
-      }));
+    const handleUserMoved = (data) => {
+      console.log('User moved:', data);
+      setRoomState(prev => {
+        if (!prev) return prev;
+
+        const updatedParticipants = prev.participants.map(p => {
+          if (p.user._id === data.userId) {
+            return {
+              ...p,
+              position: data.position
+            };
+          }
+          return p;
+        });
+
+        return {
+          ...prev,
+          participants: updatedParticipants
+        };
+      });
     };
 
-    socket.on('roomState', handleRoomState);
+    socket.on('userMoved', handleUserMoved);
 
     return () => {
-      socket.off('roomState', handleRoomState);
+      socket.off('userMoved', handleUserMoved);
     };
   }, [socket]);
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !socket || !socket.connected || !roomState) {
-      console.log('Cannot send message:', {
-        hasMessage: !!newMessage.trim(),
+  // Handle player movement
+  const handlePlayerMove = (position) => {
+    console.log('handlePlayerMove called with position:', {
+      position,
+      hasSocket: !!socket,
+      socketConnected: socket?.connected,
+      hasRoomState: !!roomState,
+      roomId: roomState?._id,
+      userId: user?._id
+    });
+
+    if (!socket?.connected || !roomState?._id) {
+      console.log('Cannot send movement:', {
         hasSocket: !!socket,
         isConnected: socket?.connected,
-        hasRoom: !!roomState
+        hasRoom: !!roomState,
+        roomId: roomState?._id
       });
       return;
     }
 
-    console.log('Sending message:', {
+    // Emit movement to server
+    console.log('Emitting userMove event:', {
       roomId: roomState._id,
-      message: newMessage.trim()
+      position,
+      socketId: socket.id
     });
 
-    socket.emit('chatMessage', {
+    socket.emit('userMove', {
+      roomId: roomState._id,
+      position
+    }, (response) => {
+      console.log('userMove response:', response);
+      if (response?.error) {
+        console.error('Error sending movement:', response.error);
+        setError('Failed to update position: ' + response.error);
+      }
+    });
+
+    // Update local state immediately for smooth movement
+    setRoomState(prev => {
+      if (!prev) {
+        console.log('No previous room state to update');
+        return prev;
+      }
+
+      console.log('Updating local room state with new position:', {
+        userId: user._id,
+        oldPosition: prev.participants.find(p => p.user._id === user._id)?.position,
+        newPosition: position
+      });
+
+      const updatedParticipants = prev.participants.map(p => {
+        if (p.user._id === user._id) {
+          return {
+            ...p,
+            position
+          };
+        }
+        return p;
+      });
+
+      return {
+        ...prev,
+        participants: updatedParticipants
+      };
+    });
+  };
+
+  const handleSendMessage = (e) => {
+    e.preventDefault();
+    console.log('Attempting to send message:', {
+      message: newMessage.trim(),
+      hasSocket: !!socket,
+      socketConnected: socket?.connected,
+      hasRoom: !!roomState,
+      roomId: roomState?._id
+    });
+
+    if (!newMessage.trim() || !socket?.connected || !roomState?._id) {
+      console.log('Cannot send message:', {
+        hasMessage: !!newMessage.trim(),
+        hasSocket: !!socket,
+        isConnected: socket?.connected,
+        hasRoom: !!roomState,
+        roomId: roomState?._id
+      });
+      return;
+    }
+
+    const messageData = {
       roomId: roomState._id,
       message: newMessage.trim()
-    }, (response) => {
+    };
+
+    console.log('Emitting chatMessage event:', messageData);
+
+    socket.emit('chatMessage', messageData, (response) => {
+      console.log('Chat message response:', response);
       if (response?.error) {
         console.error('Error sending message:', response.error);
         setError('Failed to send message: ' + response.error);
+      } else {
+        // Add message to local state immediately
+        setMessages(prev => [...prev, {
+          type: 'chat',
+          user: {
+            _id: user._id,
+            username: user.username
+          },
+          message: newMessage.trim(),
+          createdAt: new Date().toISOString()
+        }]);
+        setNewMessage('');
       }
     });
-    setNewMessage('');
   };
 
   const handleLogout = () => {
@@ -252,6 +425,22 @@ export const MainRoom = () => {
     }
     logout();
   };
+
+  // Debug log for room state and socket
+  useEffect(() => {
+    console.log('MainRoom state:', {
+      hasSocket: !!socket,
+      socketConnected: socket?.connected,
+      socketId: socket?.id,
+      hasRoomState: !!roomState,
+      roomId: roomState?._id,
+      roomName: roomState?.name,
+      participants: roomState?.participants?.length,
+      objects: roomState?.objects?.length,
+      objectsData: roomState?.objects,
+      messages: messages.length
+    });
+  }, [socket, roomState, messages]);
 
   if (error) {
     return (
@@ -294,8 +483,41 @@ export const MainRoom = () => {
       <div className="flex-1 flex">
         {/* Game Container */}
         <div className="flex-1 p-4" ref={gameContainerRef}>
-          <div className="bg-white rounded-lg shadow h-full flex items-center justify-center">
-            <p className="text-gray-500">Game will be integrated here</p>
+          <div className="bg-white rounded-lg shadow h-full overflow-hidden relative">
+            {!socket ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-gray-500">Connecting to server...</p>
+              </div>
+            ) : !socket.connected ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-gray-500">Waiting for connection...</p>
+              </div>
+            ) : !roomState ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-gray-500">Loading room...</p>
+              </div>
+            ) : !roomState.objects ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-gray-500">Initializing game objects...</p>
+              </div>
+            ) : (
+              <>
+                <GameCanvas
+                  key={`game-canvas-${roomState._id}`}
+                  roomState={roomState}
+                  socket={socket}
+                  onPlayerMove={handlePlayerMove}
+                />
+                {/* Debug overlay */}
+                <div className="absolute top-0 right-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
+                  <div>Socket ID: {socket.id}</div>
+                  <div>Room ID: {roomState._id}</div>
+                  <div>Players: {roomState.participants?.length}</div>
+                  <div>Objects: {roomState.objects?.length}</div>
+                  <div>Room Name: {roomState.name}</div>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -368,11 +590,11 @@ export const MainRoom = () => {
               <button
                 type="submit"
                 className={`px-4 py-2 rounded ${
-                  socket?.connected
+                  socket?.connected && newMessage.trim()
                     ? 'bg-blue-500 text-white hover:bg-blue-600'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
-                disabled={!socket?.connected}
+                disabled={!socket?.connected || !newMessage.trim()}
               >
                 Send
               </button>

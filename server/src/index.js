@@ -12,6 +12,43 @@ const roomRoutes = require('./routes/roomRoutes');
 const User = require('./models/UserModel');
 const Room = require('./models/Room');
 
+// Function to create initial game objects for a room
+async function createInitialGameObjects(room) {
+  try {
+    // Create some walls
+    const walls = [
+      // Outer walls
+      { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 800, height: 20 } },
+      { type: 'wall', position: { x: 0, y: 580 }, properties: { color: '#4a5568', width: 800, height: 20 } },
+      { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
+      { type: 'wall', position: { x: 780, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
+      
+      // Inner walls and objects
+      { type: 'wall', position: { x: 200, y: 200 }, properties: { color: '#718096', width: 400, height: 20 } },
+      { type: 'wall', position: { x: 200, y: 400 }, properties: { color: '#718096', width: 400, height: 20 } },
+      { type: 'wall', position: { x: 300, y: 200 }, properties: { color: '#718096', width: 20, height: 220 } },
+      
+      // Interactive objects
+      { type: 'furniture', position: { x: 100, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 150, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 650, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 700, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      
+      // Decorative objects
+      { type: 'decoration', position: { x: 400, y: 300 }, properties: { color: '#48bb78', type: 'plant' } },
+      { type: 'decoration', position: { x: 500, y: 500 }, properties: { color: '#f6ad55', type: 'table' } }
+    ];
+
+    // Add objects to room
+    room.objects = walls;
+    await room.save();
+    
+    console.log('Added initial game objects to room:', room.name);
+  } catch (error) {
+    console.error('Error creating initial game objects:', error);
+  }
+}
+
 // Function to ensure lobby room exists
 async function ensureLobbyRoom() {
   try {
@@ -32,8 +69,17 @@ async function ensureLobbyRoom() {
       });
       await lobbyRoom.save();
       console.log('Lobby room created successfully');
+      
+      // Add initial game objects
+      await createInitialGameObjects(lobbyRoom);
     } else {
       console.log('Lobby room already exists:', lobbyRoom._id);
+      
+      // Check if room has objects, if not add them
+      if (!lobbyRoom.objects || lobbyRoom.objects.length === 0) {
+        console.log('Adding game objects to existing lobby room...');
+        await createInitialGameObjects(lobbyRoom);
+      }
     }
     
     return lobbyRoom;
@@ -157,39 +203,81 @@ io.on('connection', (socket) => {
   });
 
   // Handle user joining a room
-  socket.on('joinRoom', async (roomId) => {
+  socket.on('joinRoom', async (roomIdentifier) => {
     try {
-      const room = await Room.findById(roomId);
+      console.log('User attempting to join room:', {
+        userId: socket.user._id,
+        username: socket.user.username,
+        roomIdentifier
+      });
+
+      // Try to find room by ID first, then by name
+      let room = await Room.findById(roomIdentifier);
       if (!room) {
+        room = await Room.findOne({ name: roomIdentifier });
+      }
+      
+      if (!room) {
+        console.error('Room not found:', roomIdentifier);
         socket.emit('error', { message: 'Room not found' });
         return;
       }
 
+      // Check if user is already in the room
+      const isParticipant = room.participants.some(
+        p => p.user._id.toString() === socket.user._id.toString()
+      );
+
+      if (!isParticipant) {
+        console.log('Adding user to room participants:', {
+          userId: socket.user._id,
+          username: socket.user.username,
+          roomId: room._id,
+          roomName: room.name
+        });
+
+        // Add user to room with initial position
+        await room.addParticipant(socket.user._id, { x: 100, y: 100 });
+        
+        // Refresh room data after adding participant
+        await room.populate('participants.user', 'username avatar isOnline');
+      }
+
       // Leave current room if any
-      if (socket.user.currentRoom && socket.user.currentRoom !== 'lobby') {
+      if (socket.user.currentRoom && socket.user.currentRoom !== roomIdentifier) {
         socket.leave(socket.user.currentRoom);
       }
 
       // Join new room
-      socket.join(roomId);
-      socket.user.currentRoom = roomId;
+      socket.join(roomIdentifier);
+      socket.user.currentRoom = roomIdentifier;
       await socket.user.save();
 
       // Notify room of new participant
-      io.to(roomId).emit('userJoined', {
+      io.to(roomIdentifier).emit('userJoined', {
         userId: socket.user._id,
         username: socket.user.username,
         avatar: socket.user.avatar,
-        position: { x: 0, y: 0 }
+        position: { x: 100, y: 100 }
       });
 
-      // Send room state to new participant
-      const roomState = await Room.findById(roomId)
+      // Send updated room state to all clients in the room
+      const updatedRoom = await Room.findById(roomIdentifier)
         .populate('participants.user', 'username avatar isOnline')
         .populate('createdBy', 'username avatar');
-      
-      socket.emit('roomState', roomState);
+
+      console.log('Broadcasting room state after join:', {
+        roomId: updatedRoom._id,
+        participants: updatedRoom.participants.map(p => ({
+          userId: p.user._id,
+          username: p.user.username,
+          position: p.position
+        }))
+      });
+
+      io.to(roomIdentifier).emit('roomState', updatedRoom);
     } catch (error) {
+      console.error('Error in joinRoom:', error);
       socket.emit('error', { message: error.message });
     }
   });
@@ -197,28 +285,66 @@ io.on('connection', (socket) => {
   // Handle user movement
   socket.on('userMove', async (data) => {
     try {
+      console.log('Received movement event:', {
+        socketId: socket.id,
+        userId: socket.user?._id,
+        username: socket.user?.username,
+        data
+      });
+
       const { roomId, position } = data;
       
       // Update user position in room
-      const room = await Room.findById(roomId);
-      if (!room) return;
+      const room = await Room.findById(roomId)
+        .populate('participants.user', 'username avatar isOnline');
+      
+      if (!room) {
+        console.error('Room not found for movement:', roomId);
+        return;
+      }
+
+      console.log('Found room for movement:', {
+        roomId: room._id,
+        roomName: room.name,
+        participants: room.participants.length,
+        movingUser: socket.user._id
+      });
 
       const participant = room.participants.find(
-        p => p.user.toString() === socket.user._id.toString()
+        p => p.user._id.toString() === socket.user._id.toString()
       );
 
       if (participant) {
+        console.log('Updating participant position:', {
+          userId: socket.user._id,
+          username: socket.user.username,
+          oldPosition: participant.position,
+          newPosition: position
+        });
+
         participant.position = position;
         await room.save();
+        
+        // Broadcast updated room state to all clients in the room
+        io.to(roomId).emit('roomState', room);
+        
+        console.log('Broadcasted room state update:', {
+          roomId: room._id,
+          participants: room.participants.map(p => ({
+            userId: p.user._id,
+            username: p.user.username,
+            position: p.position
+          }))
+        });
+      } else {
+        console.error('Participant not found in room:', {
+          userId: socket.user._id,
+          roomId: room._id,
+          participants: room.participants.map(p => p.user._id.toString())
+        });
       }
-
-      // Broadcast movement to room
-      socket.to(roomId).emit('userMoved', {
-        userId: socket.user._id,
-        username: socket.user.username,
-        position
-      });
     } catch (error) {
+      console.error('Error handling user movement:', error);
       socket.emit('error', { message: error.message });
     }
   });

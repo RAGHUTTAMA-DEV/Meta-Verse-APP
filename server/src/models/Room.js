@@ -1,6 +1,23 @@
 const mongoose = require('mongoose');
 const ChatMessage = require('./ChatMessage');
 
+const gameObjectSchema = new mongoose.Schema({
+  type: {
+    type: String,
+    required: true,
+    enum: ['wall', 'furniture', 'decoration', 'interactive']
+  },
+  position: {
+    x: { type: Number, required: true },
+    y: { type: Number, required: true }
+  },
+  properties: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed,
+    default: new Map()
+  }
+}, { _id: false });
+
 const roomSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -51,28 +68,30 @@ const roomSchema = new mongoose.Schema({
       ref: 'User'
     },
     position: {
-      x: Number,
-      y: Number
+      x: { type: Number, default: 100 },
+      y: { type: Number, default: 100 }
     },
-    joinedAt: {
+    lastActive: {
       type: Date,
       default: Date.now
     }
   }],
-  objects: [{
-    type: {
-      type: String,
-      required: true
+  messages: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
     },
-    position: {
-      x: Number,
-      y: Number
-    },
-    properties: {
-      type: Map,
-      of: mongoose.Schema.Types.Mixed
+    content: String,
+    timestamp: {
+      type: Date,
+      default: Date.now
     }
-  }]
+  }],
+  objects: [gameObjectSchema],
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
 }, {
   timestamps: true
 });
@@ -86,7 +105,7 @@ roomSchema.methods.addParticipant = async function(userId, position = { x: 0, y:
   const participant = {
     user: userId,
     position,
-    joinedAt: new Date()
+    lastActive: new Date()
   };
 
   this.participants.push(participant);
