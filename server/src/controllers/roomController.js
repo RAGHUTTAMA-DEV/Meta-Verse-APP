@@ -31,16 +31,32 @@ const createRoom = async (req, res) => {
   }
 };
 
-// Get all public rooms
+// Get all public rooms and system rooms
 const getRooms = async (req, res) => {
   try {
-    const rooms = await Room.find({ isPrivate: false })
+    const { name } = req.query;
+    const query = {
+      $or: [
+        { isPrivate: false },
+        { isSystemRoom: true }
+      ]
+    };
+
+    // If name is provided, add it to the query
+    if (name) {
+      query.name = name;
+    }
+
+    const rooms = await Room.find(query)
       .populate('createdBy', 'username avatar')
       .populate('participants.user', 'username avatar isOnline')
-      .select('-password');
+      .select('-password')
+      .sort({ isSystemRoom: -1, createdAt: 1 }); // System rooms first, then by creation date
 
+    console.log('Found rooms:', rooms.map(r => ({ name: r.name, isSystemRoom: r.isSystemRoom })));
     res.json({ rooms });
   } catch (error) {
+    console.error('Error fetching rooms:', error);
     res.status(500).json({ error: error.message });
   }
 };

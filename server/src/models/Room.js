@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const ChatMessage = require('./ChatMessage');
 
 const roomSchema = new mongoose.Schema({
   name: {
@@ -11,13 +12,27 @@ const roomSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  maxParticipants: {
-    type: Number,
-    default: 50
+  isSystemRoom: {
+    type: Boolean,
+    default: false
   },
   isPrivate: {
     type: Boolean,
     default: false
+  },
+  settings: {
+    maxParticipants: {
+      type: Number,
+      default: 50
+    },
+    allowChat: {
+      type: Boolean,
+      default: true
+    },
+    allowVoice: {
+      type: Boolean,
+      default: true
+    }
   },
   password: {
     type: String,
@@ -26,7 +41,9 @@ const roomSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: function() {
+      return !this.isSystemRoom; // Only required for non-system rooms
+    }
   },
   participants: [{
     user: {

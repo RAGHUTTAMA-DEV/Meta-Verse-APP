@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        #messages { 
+            height: 300px; 
+            overflow-y: auto; 
+            border: 1px solid #ccc; 
+            padding: 10px; 
+            margin: 10px 0; 
+        }
+        .error { color: red; }
+        .success { color: green; }
+        .info { color: blue; }
+    </style>
+</head>
+<body>
+    <h2>Socket.IO Test</h2>
+    <div id="status">Connecting...</div>
+    <div id="messages"></div>
+    <input type="text" id="message" placeholder="Type a message">
+    <button onclick="sendMessage()">Send</button>
+    <button onclick="reconnect()">Reconnect</button>
+
+    <script>
+        let socket = null;
+        const token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2ODI4OTNjMTczMzViZDgxZTFiN2Y0MDQiLCJpYXQiOjE3NDc0OTY2NzQsImV4cCI6MTc0ODEwMTQ3NH0.R_8BgY1d2kBwqPNXoeRZBCGc3TIX08KDPeikprWdBnY';
+
+        function connect() {
+            if (socket) {
+                socket.close();
+            }
+
+            socket = io('http://localhost:5000', {
+                auth: { token },
+                transports: ['polling', 'websocket'],
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000,
+                timeout: 20000,
+                withCredentials: true
+            });
+
+            setupSocketListeners();
+        }
+
+        function setupSocketListeners() {
+            socket.on('connect', () => {
+                document.getElementById('status').textContent = 'Connected';
+                log('Connected to server', 'success');
+                log('Transport: ' + socket.io.engine.transport.name, 'info');
+                
+                // Authenticate after connection
+                socket.emit('authenticate', { token }, (response) => {
+                    if (response.error) {
+                        log('Auth error: ' + response.error, 'error');
+                    } else {
+                        log('Auth response: ' + JSON.stringify(response), 'success');
+                        if (response.success) {
+                            log('Authenticated as: ' + response.user.username, 'success');
+                        }
+                    }
+                });
+            });
+
+            socket.on('connect_error', (error) => {
+                document.getElementById('status').textContent = 'Connection Error';
+                log('Connection error: ' + error.message, 'error');
+                log('Transport: ' + (socket.io.engine ? socket.io.engine.transport.name : 'unknown'), 'error');
+            });
+
+            socket.on('error', (error) => {
+                log('Socket error: ' + (error.message || JSON.stringify(error)), 'error');
+            });
+
+            socket.on('disconnect', (reason) => {
+                document.getElementById('status').textContent = 'Disconnected';
+                log('Disconnected: ' + reason, 'info');
+            });
+
+            socket.on('roomState', (state) => {
+                log('Room state: ' + JSON.stringify(state), 'info');
+            });
+
+            socket.on('newMessage', (message) => {
+                log('New message received:', 'info');
+                log('From: ' + message.user.username, 'info');
+                log('Content: ' + message.message, 'info');
+                log('Timestamp: ' + new Date(message.createdAt).toLocaleString(), 'info');
+            });
+        }
+
+        function log(message, type = 'info') {
+            const messages = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.textContent = message;
+            div.className = type;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+            console.log(`[${type}] ${message}`);
+        }
+
+        function sendMessage() {
+            const messageInput = document.getElementById('message');
+            const message = messageInput.value;
+            if (message && socket && socket.connected) {
+                log('Sending message: ' + message, 'info');
+                const messageData = {
+                    roomId: '6828a99148946b5b8c03be26', // Lobby room ID
+                    message: message
+                };
+                log('Message data: ' + JSON.stringify(messageData), 'info');
+                socket.emit('chatMessage', messageData, (response) => {
+                    if (response && response.error) {
+                        log('Error sending message: ' + response.error, 'error');
+                    } else {
+                        log('Message sent successfully', 'success');
+                    }
+                });
+                messageInput.value = '';
+            } else {
+                log('Cannot send message: Socket not connected', 'error');
+            }
+        }
+
+        function reconnect() {
+            log('Attempting to reconnect...', 'info');
+            connect();
+        }
+
+        // Initial connection
+        connect();
+    </script>
+</body>
+</html> 

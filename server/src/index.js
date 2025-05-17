@@ -12,16 +12,52 @@ const roomRoutes = require('./routes/roomRoutes');
 const User = require('./models/UserModel');
 const Room = require('./models/Room');
 
+// Function to ensure lobby room exists
+async function ensureLobbyRoom() {
+  try {
+    let lobbyRoom = await Room.findOne({ name: 'Lobby' });
+    
+    if (!lobbyRoom) {
+      console.log('Creating lobby room...');
+      lobbyRoom = new Room({
+        name: 'Lobby',
+        description: 'Main lobby room for all users',
+        isSystemRoom: true,
+        isPrivate: false,
+        settings: {
+          maxParticipants: 100,
+          allowChat: true,
+          allowVoice: true
+        }
+      });
+      await lobbyRoom.save();
+      console.log('Lobby room created successfully');
+    } else {
+      console.log('Lobby room already exists:', lobbyRoom._id);
+    }
+    
+    return lobbyRoom;
+  } catch (error) {
+    console.error('Error ensuring lobby room exists:', error);
+    throw error;
+  }
+}
+
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
 
 // Middleware
+const allowedOrigins = ['http://localhost:5173', 'http://localhost:5173/', 'http://localhost:5000'];
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true
+  origin: true, // Allow all origins for testing
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json());
+app.use(express.static('public')); // Serve static files from 'public' directory
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -30,37 +66,95 @@ app.use('/api/rooms', roomRoutes);
 // Socket.IO setup
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
-});
-
-// Socket.IO authentication middleware
-io.use(async (socket, next) => {
-  try {
-    const token = socket.handshake.auth.token;
-    if (!token) {
-      return next(new Error('Authentication error'));
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId);
-    
-    if (!user) {
-      return next(new Error('Authentication error'));
-    }
-
-    socket.user = user;
-    next();
-  } catch (error) {
-    next(new Error('Authentication error'));
-  }
+    origin: true, // Allow all origins for testing
+    methods: ['GET', 'POST', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  },
+  transports: ['polling', 'websocket'],
+  allowUpgrades: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  connectTimeout: 45000,
+  path: '/socket.io/',
+  serveClient: false,
+  cookie: false
 });
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id, socket.user.username);
+  console.log('Socket.IO connection attempt:', {
+    id: socket.id,
+    transport: socket.conn.transport.name,
+    handshake: {
+      query: socket.handshake.query,
+      headers: socket.handshake.headers
+    }
+  });
+
+  // Handle authentication
+  socket.on('authenticate', async (data, callback) => {
+    try {
+      console.log('Authentication attempt:', {
+        socketId: socket.id,
+        data: data,
+        transport: socket.conn.transport.name
+      });
+
+      const token = data.token || socket.handshake.query.token;
+      
+      if (!token) {
+        console.log('No token provided');
+        return callback({ error: 'No token provided' });
+      }
+
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log('Token decoded:', decoded);
+
+      const user = await User.findById(decoded.userId);
+      if (!user) {
+        console.log('User not found:', decoded.userId);
+        return callback({ error: 'User not found' });
+      }
+
+      console.log('User authenticated:', user.username);
+      socket.user = user;
+      
+      // Send success response
+      callback({ 
+        success: true, 
+        user: { 
+          username: user.username, 
+          id: user._id 
+        }
+      });
+
+      // After successful authentication, try to join the lobby
+      if (user.currentRoom) {
+        socket.emit('joinRoom', user.currentRoom);
+      }
+    } catch (error) {
+      console.error('Authentication error:', error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on('error', (error) => {
+    console.error('Socket error:', {
+      socketId: socket.id,
+      error: error,
+      transport: socket.conn.transport.name
+    });
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log('Socket disconnected:', {
+      socketId: socket.id,
+      reason: reason,
+      transport: socket.conn.transport.name,
+      user: socket.user?.username
+    });
+  });
 
   // Handle user joining a room
   socket.on('joinRoom', async (roomId) => {
@@ -132,27 +226,50 @@ io.on('connection', (socket) => {
   // Handle chat messages
   socket.on('chatMessage', async (data) => {
     try {
+      console.log('Received chat message:', {
+        socketId: socket.id,
+        userId: socket.user?._id,
+        username: socket.user?.username,
+        data: data
+      });
+
       const { roomId, message } = data;
       const room = await Room.findById(roomId);
       
       if (!room) {
+        console.log('Room not found:', roomId);
         socket.emit('error', { message: 'Room not found' });
         return;
       }
 
+      console.log('Found room:', {
+        roomId: room._id,
+        name: room.name,
+        participants: room.participants.length
+      });
+
       // Add message to room
       const chatMessage = await room.addChatMessage(socket.user._id, message);
+      console.log('Message added to room:', {
+        messageId: chatMessage._id,
+        content: chatMessage.message,
+        timestamp: chatMessage.createdAt
+      });
 
       // Broadcast message to room
-      io.to(roomId).emit('newMessage', {
+      const messageToEmit = {
         ...chatMessage.toObject(),
         user: {
           _id: socket.user._id,
           username: socket.user.username,
           avatar: socket.user.avatar
         }
-      });
+      };
+      console.log('Broadcasting message:', messageToEmit);
+      
+      io.to(roomId).emit('newMessage', messageToEmit);
     } catch (error) {
+      console.error('Error handling chat message:', error);
       socket.emit('error', { message: error.message });
     }
   });
@@ -165,47 +282,28 @@ io.on('connection', (socket) => {
       signal: data.signal
     });
   });
-
-  // Handle disconnection
-  socket.on('disconnect', async () => {
-    try {
-      // Update user status
-      socket.user.isOnline = false;
-      socket.user.lastSeen = new Date();
-      
-      // Leave current room if any
-      if (socket.user.currentRoom && socket.user.currentRoom !== 'lobby') {
-        const room = await Room.findById(socket.user.currentRoom);
-        if (room) {
-          await room.removeParticipant(socket.user._id);
-          io.to(room._id).emit('userLeft', {
-            userId: socket.user._id,
-            username: socket.user.username
-          });
-        }
-        socket.user.currentRoom = 'lobby';
-      }
-      
-      await socket.user.save();
-      console.log('User disconnected:', socket.id, socket.user.username);
-    } catch (error) {
-      console.error('Error handling disconnect:', error);
-    }
-  });
 });
 
-// MongoDB connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/metaverse')
-  .then(() => console.log('Connected to MongoDB'))
-  .catch((err) => console.error('MongoDB connection error:', err));
+// Connect to MongoDB and start server
+mongoose.connect(process.env.MONGODB_URI)
+  .then(async () => {
+    console.log('Connected to MongoDB');
+    
+    // Ensure lobby room exists
+    await ensureLobbyRoom();
+    
+    // Start server
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error('MongoDB connection error:', error);
+    process.exit(1);
+  });
 
 // Basic route for testing
 app.get('/', (req, res) => {
   res.json({ message: 'Metaverse Server is running' });
-});
-
-// Start server
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
 }); 
