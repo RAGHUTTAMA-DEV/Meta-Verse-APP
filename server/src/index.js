@@ -10,7 +10,7 @@ const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/authRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const User = require('./models/UserModel');
-const Room = require('./models/Room');
+const Room = require('./models/Room');g
 
 // Function to create initial game objects for a room
 async function createInitialGameObjects(room) {
@@ -238,9 +238,6 @@ io.on('connection', (socket) => {
 
         // Add user to room with initial position
         await room.addParticipant(socket.user._id, { x: 100, y: 100 });
-        
-        // Refresh room data after adding participant
-        await room.populate('participants.user', 'username avatar isOnline');
       }
 
       // Leave current room if any
@@ -253,6 +250,10 @@ io.on('connection', (socket) => {
       socket.user.currentRoom = roomIdentifier;
       await socket.user.save();
 
+      // Populate room with full user details including avatar
+      await room.populate('participants.user', 'username avatar isOnline');
+      await room.populate('createdBy', 'username avatar');
+
       // Notify room of new participant
       io.to(roomIdentifier).emit('userJoined', {
         userId: socket.user._id,
@@ -262,20 +263,17 @@ io.on('connection', (socket) => {
       });
 
       // Send updated room state to all clients in the room
-      const updatedRoom = await Room.findById(roomIdentifier)
-        .populate('participants.user', 'username avatar isOnline')
-        .populate('createdBy', 'username avatar');
-
       console.log('Broadcasting room state after join:', {
-        roomId: updatedRoom._id,
-        participants: updatedRoom.participants.map(p => ({
+        roomId: room._id,
+        participants: room.participants.map(p => ({
           userId: p.user._id,
           username: p.user.username,
+          avatar: p.user.avatar,
           position: p.position
         }))
       });
 
-      io.to(roomIdentifier).emit('roomState', updatedRoom);
+      io.to(roomIdentifier).emit('roomState', room);
     } catch (error) {
       console.error('Error in joinRoom:', error);
       socket.emit('error', { message: error.message });
@@ -333,6 +331,7 @@ io.on('connection', (socket) => {
           participants: room.participants.map(p => ({
             userId: p.user._id,
             username: p.user.username,
+            avatar: p.user.avatar,
             position: p.position
           }))
         });

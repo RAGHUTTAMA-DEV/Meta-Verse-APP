@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 
 const TILE_SIZE = 20;
@@ -7,15 +7,11 @@ const MOVEMENT_SPEED = 3;
 
 const GameCanvas = ({ roomState, socket, onPlayerMove }) => {
   const canvasRef = useRef(null);
-  const { user } = useAuth();
-  const [gameState, setGameState] = useState({
-    players: {},
-    objects: [],
-    viewport: { x: 0, y: 0, width: 800, height: 600 }
-  });
-  const keysPressed = useRef(new Set());
+  const { user: currentUser } = useAuth();
+  const [fps, setFps] = useState(0);
   const frameCount = useRef(0);
-  const lastFrameTime = useRef(Date.now());
+  const lastFpsUpdate = useRef(0);
+  const keys = useRef(new Set());
 
   // Debug log for initial props and state
   useEffect(() => {
@@ -28,13 +24,12 @@ const GameCanvas = ({ roomState, socket, onPlayerMove }) => {
       roomName: roomState?.name,
       participants: roomState?.participants?.length,
       objects: roomState?.objects?.length,
-      objectsData: roomState?.objects,
-      hasUser: !!user,
-      userId: user?._id
+      hasUser: !!currentUser,
+      userId: currentUser?._id
     });
-  }, [socket, roomState, user]);
+  }, [socket, roomState, currentUser]);
 
-  // Update game state when room state changes
+  // Update room state logging
   useEffect(() => {
     if (roomState) {
       console.log('Room state updated in GameCanvas:', {
@@ -42,286 +37,297 @@ const GameCanvas = ({ roomState, socket, onPlayerMove }) => {
         roomName: roomState.name,
         participants: roomState.participants?.length,
         objects: roomState.objects?.length,
-        currentUser: user?._id,
+        currentUser: currentUser?._id,
         participants: roomState.participants?.map(p => ({
           userId: p.user._id,
           username: p.user.username,
+          avatar: p.user.avatar,
           position: p.position
         }))
       });
-
-      const players = roomState.participants.reduce((acc, participant) => {
-        // Ensure participant has valid position
-        const position = participant.position || { x: 100, y: 100 };
-        if (typeof position.x !== 'number' || typeof position.y !== 'number') {
-          console.warn('Invalid position for participant:', participant);
-          position.x = 100;
-          position.y = 100;
-        }
-
-        const playerData = {
-          ...participant,
-          username: participant.user.username,
-          color: participant.user._id === user?._id ? '#4299e1' : '#48bb78',
-          position
-        };
-
-        console.log('Adding player to game state:', {
-          userId: participant.user._id,
-          username: playerData.username,
-          position: playerData.position,
-          isCurrentUser: participant.user._id === user?._id
-        });
-
-        return {
-          ...acc,
-          [participant.user._id]: playerData
-        };
-      }, {});
-
-      setGameState(prev => ({ 
-        ...prev, 
-        players, 
-        objects: roomState.objects || [] 
-      }));
     }
-  }, [roomState, user]);
+  }, [roomState, currentUser]);
 
-  // Handle keyboard events
-  const handleKeyDown = useCallback((e) => {
-    if (!user || !roomState?._id) return;
-    keysPressed.current.add(e.key.toLowerCase());
-    e.preventDefault();
-  }, [user, roomState]);
-
-  const handleKeyUp = useCallback((e) => {
-    keysPressed.current.delete(e.key.toLowerCase());
-    e.preventDefault();
-  }, []);
-
-  // Set up keyboard event listeners and movement loop
+  // Initialize canvas and setup
   useEffect(() => {
+    if (!canvasRef.current || !roomState) return;
+
     const canvas = canvasRef.current;
-    if (!canvas || !user || !roomState?._id) {
-      console.log('Movement setup skipped:', { 
-        hasCanvas: !!canvas, 
-        hasUser: !!user, 
-        hasRoomState: !!roomState?._id 
-      });
-      return;
-    }
+    const ctx = canvas.getContext('2d');
 
-    console.log('Setting up movement handlers for user:', {
-      userId: user._id,
-      username: user.username,
-      roomId: roomState._id
-    });
+    // Set canvas size
+    const resizeCanvas = () => {
+      const container = canvas.parentElement;
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+    };
 
-    canvas.focus();
-    canvas.tabIndex = 0;
-    canvas.addEventListener('keydown', handleKeyDown);
-    canvas.addEventListener('keyup', handleKeyUp);
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
 
-    const moveLoop = setInterval(() => {
-      if (!user || !gameState.players[user._id]) {
+    // Setup keyboard controls
+    const handleKeyDown = (e) => {
+      keys.current.add(e.key.toLowerCase());
+    };
+
+    const handleKeyUp = (e) => {
+      keys.current.delete(e.key.toLowerCase());
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    // Movement loop
+    const movementLoop = () => {
+      if (!roomState || !currentUser) return;
+
+      const player = roomState.participants?.find(p => p.user._id === currentUser._id);
+      if (!player) {
         console.log('No player found for movement:', {
-          hasUser: !!user,
-          hasPlayer: !!gameState.players[user._id],
-          players: Object.keys(gameState.players)
+          hasUser: !!currentUser,
+          hasPlayer: !!player,
+          players: roomState.participants
         });
         return;
       }
-      
-      const currentPlayer = gameState.players[user._id];
-      const movement = { x: 0, y: 0 };
-      const keys = keysPressed.current;
 
-      if (keys.has('w') || keys.has('arrowup')) movement.y -= MOVEMENT_SPEED;
-      if (keys.has('s') || keys.has('arrowdown')) movement.y += MOVEMENT_SPEED;
-      if (keys.has('a') || keys.has('arrowleft')) movement.x -= MOVEMENT_SPEED;
-      if (keys.has('d') || keys.has('arrowright')) movement.x += MOVEMENT_SPEED;
+      const speed = 5;
+      let moved = false;
+      const newPosition = { ...player.position };
 
-      if (movement.x !== 0 || movement.y !== 0) {
-        const newPosition = {
-          x: currentPlayer.position.x + movement.x,
-          y: currentPlayer.position.y + movement.y
-        };
-
-        console.log('Emitting movement:', {
-          userId: user._id,
-          from: currentPlayer.position,
-          to: newPosition,
-          keys: Array.from(keys)
-        });
-
-        // Emit movement to server
-        if (socket && socket.connected) {
-          socket.emit('userMove', {
-            roomId: roomState._id,
-            position: newPosition
-          });
-        } else {
-          console.warn('Socket not connected, cannot emit movement');
-        }
+      if (keys.current.has('w') || keys.current.has('arrowup')) {
+        newPosition.y -= speed;
+        moved = true;
       }
-    }, 1000 / 60);
+      if (keys.current.has('s') || keys.current.has('arrowdown')) {
+        newPosition.y += speed;
+        moved = true;
+      }
+      if (keys.current.has('a') || keys.current.has('arrowleft')) {
+        newPosition.x -= speed;
+        moved = true;
+      }
+      if (keys.current.has('d') || keys.current.has('arrowright')) {
+        newPosition.x += speed;
+        moved = true;
+      }
+
+      // Keep player within bounds
+      newPosition.x = Math.max(20, Math.min(canvas.width - 20, newPosition.x));
+      newPosition.y = Math.max(20, Math.min(canvas.height - 20, newPosition.y));
+
+      if (moved) {
+        onPlayerMove(newPosition);
+      }
+    };
+
+    // Animation loop
+    const animate = (timestamp) => {
+      // Calculate FPS
+      frameCount.current++;
+      if (timestamp - lastFpsUpdate.current >= 1000) {
+        setFps(frameCount.current);
+        frameCount.current = 0;
+        lastFpsUpdate.current = timestamp;
+      }
+
+      // Handle movement
+      movementLoop();
+
+      // Render frame
+      render();
+
+      // Request next frame
+      requestAnimationFrame(animate);
+    };
+
+    // Start animation loop
+    requestAnimationFrame(animate);
 
     return () => {
-      canvas.removeEventListener('keydown', handleKeyDown);
-      canvas.removeEventListener('keyup', handleKeyUp);
-      clearInterval(moveLoop);
+      window.removeEventListener('resize', resizeCanvas);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [user, roomState, gameState, socket, handleKeyDown, handleKeyUp]);
+  }, [roomState, currentUser, onPlayerMove]);
 
-  // Render game
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+  const renderPlayer = (ctx, participant) => {
+    const { position, user } = participant;
+    if (!position || typeof position.x !== 'number' || typeof position.y !== 'number') {
+      console.warn('Invalid position for participant:', participant);
+      return;
+    }
+
+    const isCurrentUser = user._id === currentUser?._id;
+    
+    // Draw player circle
+    ctx.beginPath();
+    ctx.arc(position.x, position.y, 20, 0, Math.PI * 2);
+    ctx.fillStyle = isCurrentUser ? '#3B82F6' : '#10B981'; // Blue for current user, green for others
+    ctx.fill();
+    ctx.strokeStyle = '#1F2937';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw avatar image if available
+    if (user.avatar) {
+      const avatarSize = 32;
+      const avatarX = position.x - avatarSize/2;
+      const avatarY = position.y - avatarSize/2;
+      
+      // Draw avatar background circle
+      ctx.beginPath();
+      ctx.arc(position.x, position.y, 16, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      
+      // Load and draw avatar image
+      const img = new Image();
+      img.src = user.avatar;
+      img.onload = () => {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(position.x, position.y, 16, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.drawImage(img, avatarX, avatarY, avatarSize, avatarSize);
+        ctx.restore();
+      };
+    }
+
+    // Draw username
+    ctx.font = '12px Arial';
+    ctx.fillStyle = '#1F2937';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(user.username, position.x, position.y + 35);
+  };
+
+  const renderGameObject = (ctx, obj) => {
+    const { type, position, properties } = obj;
+    if (!position || typeof position.x !== 'number' || typeof position.y !== 'number') {
+      console.warn('Invalid position for game object:', obj);
+      return;
+    }
+    
+    switch (type) {
+      case 'wall':
+        ctx.fillStyle = properties.color || '#4B5563';
+        ctx.fillRect(position.x, position.y, properties.width, properties.height);
+        // Add a subtle shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetX = 2;
+        ctx.shadowOffsetY = 2;
+        break;
+        
+      case 'furniture':
+        // Draw furniture with a more detailed look
+        ctx.fillStyle = properties.color || '#6B7280';
+        ctx.beginPath();
+        ctx.roundRect(position.x, position.y, 40, 40, 8);
+        ctx.fill();
+        // Add a highlight
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        break;
+        
+      case 'decoration':
+        if (properties.type === 'plant') {
+          // Draw a plant
+          ctx.fillStyle = '#059669';
+          ctx.beginPath();
+          ctx.arc(position.x + 15, position.y + 15, 10, 0, Math.PI * 2);
+          ctx.fill();
+          // Draw pot
+          ctx.fillStyle = '#92400E';
+          ctx.beginPath();
+          ctx.moveTo(position.x + 5, position.y + 25);
+          ctx.lineTo(position.x + 25, position.y + 25);
+          ctx.lineTo(position.x + 20, position.y + 35);
+          ctx.lineTo(position.x + 10, position.y + 35);
+          ctx.closePath();
+          ctx.fill();
+        } else if (properties.type === 'table') {
+          // Draw a table
+          ctx.fillStyle = '#92400E';
+          ctx.fillRect(position.x, position.y, 60, 40);
+          // Add table legs
+          ctx.fillStyle = '#78350F';
+          ctx.fillRect(position.x + 5, position.y + 40, 5, 20);
+          ctx.fillRect(position.x + 50, position.y + 40, 5, 20);
+        }
+        break;
+    }
+    
+    // Reset shadow
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+  };
+
+  const render = () => {
+    if (!canvasRef.current || !roomState) return;
+
+    const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#f7fafc';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#e2e8f0';
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x < canvas.width; x += TILE_SIZE) {
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Draw background
+    ctx.fillStyle = '#F3F4F6';
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Draw grid
+    ctx.strokeStyle = '#E5E7EB';
+    ctx.lineWidth = 1;
+    const gridSize = 40;
+    for (let x = 0; x < canvasRef.current.width; x += gridSize) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
+      ctx.lineTo(x, canvasRef.current.height);
       ctx.stroke();
     }
-    for (let y = 0; y < canvas.height; y += TILE_SIZE) {
+    for (let y = 0; y < canvasRef.current.height; y += gridSize) {
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(canvas.width, y);
+      ctx.lineTo(canvasRef.current.width, y);
       ctx.stroke();
     }
+
     // Draw game objects
-    gameState.objects.forEach((obj, index) => {
-      if (!obj.position || typeof obj.position.x !== 'number' || typeof obj.position.y !== 'number') return;
-      ctx.fillStyle = obj.properties?.color || '#718096';
-      switch (obj.type) {
-        case 'wall':
-          ctx.fillRect(
-            obj.position.x,
-            obj.position.y,
-            obj.properties?.width || TILE_SIZE,
-            obj.properties?.height || TILE_SIZE
-          );
-          ctx.strokeStyle = '#000';
-          ctx.strokeRect(
-            obj.position.x,
-            obj.position.y,
-            obj.properties?.width || TILE_SIZE,
-            obj.properties?.height || TILE_SIZE
-          );
-          break;
-        case 'furniture':
-          ctx.fillStyle = obj.properties?.color || '#805ad5';
-          ctx.beginPath();
-          ctx.arc(
-            obj.position.x + TILE_SIZE/2,
-            obj.position.y + TILE_SIZE/2,
-            TILE_SIZE/2,
-            0,
-            Math.PI * 2
-          );
-          ctx.fill();
-          break;
-        case 'decoration':
-          if (obj.properties?.type === 'plant') {
-            ctx.fillStyle = '#48bb78';
-            ctx.beginPath();
-            ctx.moveTo(obj.position.x, obj.position.y + TILE_SIZE);
-            ctx.lineTo(obj.position.x + TILE_SIZE/2, obj.position.y);
-            ctx.lineTo(obj.position.x + TILE_SIZE, obj.position.y + TILE_SIZE);
-            ctx.fill();
-          } else {
-            ctx.fillRect(
-              obj.position.x,
-              obj.position.y,
-              TILE_SIZE,
-              TILE_SIZE
-            );
-          }
-          break;
-      }
-      ctx.fillStyle = '#000';
-      ctx.font = '10px Arial';
-      ctx.fillText(
-        `${obj.type} ${index}`,
-        obj.position.x,
-        obj.position.y - 5
-      );
-    });
+    roomState.objects?.forEach(obj => renderGameObject(ctx, obj));
+
     // Draw players
-    Object.values(gameState.players).forEach(player => {
-      if (!player.position || typeof player.position.x !== 'number' || typeof player.position.y !== 'number') return;
-      ctx.fillStyle = player.color || '#4299e1';
-      ctx.beginPath();
-      ctx.arc(
-        player.position.x,
-        player.position.y,
-        PLAYER_SIZE / 2,
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
-      ctx.fillStyle = '#000';
-      ctx.font = '12px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        player.username,
-        player.position.x,
-        player.position.y - PLAYER_SIZE / 2 - 5
-      );
-      ctx.fillStyle = '#666';
-      ctx.font = '10px Arial';
+    roomState.participants?.forEach(participant => renderPlayer(ctx, participant));
+
+    // Draw FPS counter
+    if (fps > 0) {
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#4B5563';
       ctx.textAlign = 'left';
-      ctx.fillText(
-        `(${Math.round(player.position.x)}, ${Math.round(player.position.y)})`,
-        player.position.x + PLAYER_SIZE / 2 + 5,
-        player.position.y
-      );
-    });
-    // Calculate and draw FPS
-    frameCount.current++;
-    const now = Date.now();
-    const elapsed = now - lastFrameTime.current;
-    if (elapsed >= 1000) {
-      const fps = Math.round((frameCount.current * 1000) / elapsed);
-      ctx.fillStyle = '#000';
-      ctx.font = '12px Arial';
-      ctx.textAlign = 'left';
-      ctx.fillText(`FPS: ${fps}`, 10, 20);
-      frameCount.current = 0;
-      lastFrameTime.current = now;
+      ctx.fillText(`FPS: ${Math.round(fps)}`, 10, 20);
     }
-  }, [gameState, user]);
+  };
 
   return (
     <div className="relative w-full h-full">
       <canvas
         ref={canvasRef}
-        width={800}
-        height={600}
-        style={{
-          border: '1px solid #e2e8f0',
-          borderRadius: '4px',
-          backgroundColor: '#f7fafc',
-          outline: 'none',
-          display: 'block',
-          margin: '0 auto'
-        }}
+        className="w-full h-full"
         tabIndex={0}
+        onFocus={() => console.log('Canvas focused')}
+        onBlur={() => console.log('Canvas blurred')}
       />
       {/* Debug overlay */}
       <div className="absolute top-0 left-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
-        <div>Players: {Object.keys(gameState.players).length}</div>
-        <div>Objects: {gameState.objects.length}</div>
+        <div>Players: {roomState?.participants?.length}</div>
+        <div>Objects: {roomState?.objects?.length}</div>
         <div>Room: {roomState?.name}</div>
         <div>Socket: {socket?.connected ? 'Connected' : 'Disconnected'}</div>
-        <div>User: {user?.username}</div>
+        <div>User: {currentUser?.username}</div>
       </div>
     </div>
   );
