@@ -1,6 +1,41 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 
+// Create axios instance with default config
+const api = axios.create({
+  baseURL: import.meta.env.VITE_SERVER_URL || '/',
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Add request interceptor to include token in all requests
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor to handle auth errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear token on auth error
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
@@ -11,9 +46,18 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     // Check if user is already logged in
     const token = localStorage.getItem('token');
+    console.log('AuthProvider mounted:', {
+      hasToken: !!token,
+      tokenLength: token?.length,
+      timestamp: new Date().toISOString()
+    });
+
     if (token) {
       checkAuthStatus();
     } else {
+      console.log('No token found, setting loading to false:', {
+        timestamp: new Date().toISOString()
+      });
       setLoading(false);
     }
   }, []);
@@ -21,22 +65,44 @@ export const AuthProvider = ({ children }) => {
   const checkAuthStatus = async () => {
     try {
       const token = localStorage.getItem('token');
+      console.log('Checking auth status:', {
+        hasToken: !!token,
+        tokenLength: token?.length,
+        timestamp: new Date().toISOString()
+      });
+
       if (!token) {
+        console.log('No token found in checkAuthStatus:', {
+          timestamp: new Date().toISOString()
+        });
         setUser(null);
         setLoading(false);
         return;
       }
 
-      const response = await axios.get('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` }
+      const response = await api.get('/api/auth/me');
+      
+      console.log('Auth check response:', {
+        success: !!response.data,
+        userData: response.data,
+        timestamp: new Date().toISOString()
       });
       
-      setUser(response.data);
+      setUser(response.data.user);
     } catch (err) {
-      console.error('Auth check failed:', err);
+      console.error('Auth check failed:', {
+        error: err.message,
+        response: err.response?.data,
+        status: err.response?.status,
+        timestamp: new Date().toISOString()
+      });
       localStorage.removeItem('token');
       setUser(null);
     } finally {
+      console.log('Auth check complete, setting loading to false:', {
+        hasUser: !!user,
+        timestamp: new Date().toISOString()
+      });
       setLoading(false);
     }
   };
@@ -44,16 +110,35 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     try {
       setError(null);
-      const response = await axios.post('/api/auth/login', {
+      console.log('Attempting login:', {
+        email,
+        hasPassword: !!password,
+        timestamp: new Date().toISOString()
+      });
+
+      const response = await api.post('/api/auth/login', {
         email,
         password
       });
       
       const { token, user } = response.data;
+      console.log('Login successful:', {
+        hasToken: !!token,
+        tokenLength: token?.length,
+        userData: user,
+        timestamp: new Date().toISOString()
+      });
+
       localStorage.setItem('token', token);
       setUser(user);
       return { success: true };
     } catch (err) {
+      console.error('Login failed:', {
+        error: err.message,
+        response: err.response?.data,
+        status: err.response?.status,
+        timestamp: new Date().toISOString()
+      });
       setError(err.response?.data?.message || 'Login failed');
       return { success: false, error: err.response?.data?.message || 'Login failed' };
     }
@@ -62,26 +147,61 @@ export const AuthProvider = ({ children }) => {
   const register = async (username, email, password) => {
     try {
       setError(null);
-      const response = await axios.post('/api/auth/register', {
+      console.log('Attempting registration:', {
+        username,
+        email,
+        hasPassword: !!password,
+        timestamp: new Date().toISOString()
+      });
+
+      const response = await api.post('/api/auth/register', {
         username,
         email,
         password
       });
       
       const { token, user } = response.data;
+      console.log('Registration successful:', {
+        hasToken: !!token,
+        tokenLength: token?.length,
+        userData: user,
+        timestamp: new Date().toISOString()
+      });
+
       localStorage.setItem('token', token);
       setUser(user);
       return { success: true };
     } catch (err) {
+      console.error('Registration failed:', {
+        error: err.message,
+        response: err.response?.data,
+        status: err.response?.status,
+        timestamp: new Date().toISOString()
+      });
       setError(err.response?.data?.message || 'Registration failed');
       return { success: false, error: err.response?.data?.message || 'Registration failed' };
     }
   };
 
   const logout = () => {
+    console.log('Logging out:', {
+      hadUser: !!user,
+      timestamp: new Date().toISOString()
+    });
     localStorage.removeItem('token');
     setUser(null);
+    // Redirect to login page
+    window.location.href = '/login';
   };
+
+  // Debug log for user state changes
+  useEffect(() => {
+    console.log('User state changed:', {
+      hasUser: !!user,
+      userData: user,
+      timestamp: new Date().toISOString()
+    });
+  }, [user]);
 
   const value = {
     user,
@@ -106,4 +226,7 @@ export const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
-}; 
+};
+
+// Export the configured axios instance
+export { api as axios }; 

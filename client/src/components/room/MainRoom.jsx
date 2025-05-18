@@ -1,7 +1,6 @@
-import { useEffect, useState, useRef } from 'react';
-import { useAuth } from '../../context/AuthContext';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { useAuth, axios } from '../../context/AuthContext';
 import { io } from 'socket.io-client';
-import axios from 'axios';
 import GameCanvas from '../game/GameCanvas';
 
 export const MainRoom = () => {
@@ -11,237 +10,310 @@ export const MainRoom = () => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [error, setError] = useState(null);
-  const [lobbyId, setLobbyId] = useState(null);
+  const [lobbyRoomId, setLobbyRoomId] = useState(null);
   const messagesEndRef = useRef(null);
   const gameContainerRef = useRef(null);
 
-  // Fetch lobby room ID
+  // Remove debug log for user and socket state
+  useEffect(() => {
+    // Only log critical state changes
+    if (!user || !socket?.connected) {
+      console.log('Critical state change:', {
+        hasUser: !!user,
+        hasSocket: !!socket,
+        socketConnected: socket?.connected,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, [user, socket]);
+
   useEffect(() => {
     const fetchLobbyRoom = async () => {
       try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          console.error('No token available for fetching lobby room');
-          setError('Authentication required');
+        console.log('Fetching lobby room:', {
+          hasUser: !!user,
+          hasToken: !!localStorage.getItem('token'),
+          timestamp: new Date().toISOString()
+        });
+
+        if (!user) {
+          console.log('No user data available for fetching lobby room:', {
+            timestamp: new Date().toISOString()
+          });
           return;
         }
 
-        console.log('Fetching lobby room...');
+        const token = localStorage.getItem('token');
+        if (!token) {
+          console.error('No authentication token found:', {
+            timestamp: new Date().toISOString()
+          });
+          setError('Authentication required. Please log in again.');
+          return;
+        }
+
         const response = await axios.get('/api/rooms', {
-          headers: { Authorization: `Bearer ${token}` },
-          params: { name: 'Lobby' }
+          params: { name: 'Lobby' },
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
         });
         
-        console.log('Lobby room response:', response.data);
-        
-        if (response.data?.rooms && Array.isArray(response.data.rooms)) {
-          const lobbyRoom = response.data.rooms.find(room => room.name === 'Lobby');
-          if (lobbyRoom) {
-            console.log('Found lobby room:', lobbyRoom);
-            setLobbyId(lobbyRoom._id);
-            setRoomState(lobbyRoom); // Set initial room state
-          } else {
-            console.error('Lobby room not found in rooms array');
-            setError('Lobby room not found. Please try refreshing the page.');
-          }
-        } else {
-          console.error('Invalid rooms response format:', response.data);
-          setError('Invalid server response. Please try refreshing the page.');
+        console.log('Lobby room response:', {
+          success: !!response.data,
+          rooms: response.data?.rooms,
+          timestamp: new Date().toISOString()
+        });
+
+        if (!response.data?.rooms || !Array.isArray(response.data.rooms)) {
+          throw new Error('Invalid response format from server');
         }
+
+        const lobbyRoom = response.data.rooms.find(room => room.name === 'Lobby');
+        if (!lobbyRoom) {
+          throw new Error('Lobby room not found');
+        }
+
+        console.log('Found lobby room:', {
+          roomId: lobbyRoom._id,
+          name: lobbyRoom.name,
+          timestamp: new Date().toISOString()
+        });
+
+        setLobbyRoomId(lobbyRoom._id);
+        setRoomState(lobbyRoom); // Set initial room state
       } catch (err) {
         console.error('Error fetching lobby room:', {
-          message: err.message,
+          error: err.message,
           response: err.response?.data,
-          status: err.response?.status
+          status: err.response?.status,
+          timestamp: new Date().toISOString()
         });
-        setError(err.response?.data?.message || 'Failed to fetch lobby room. Please try refreshing the page.');
+
+        if (err.response?.status === 401) {
+          // If unauthorized, clear the token and redirect to login
+          localStorage.removeItem('token');
+          setError('Session expired. Please log in again.');
+        } else {
+          setError('Failed to fetch lobby room: ' + (err.response?.data?.error || err.message));
+        }
       }
     };
 
     fetchLobbyRoom();
-  }, []);
+  }, [user]);
 
-  // Initialize Socket.IO connection
+  // Initialize socket connection
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setError('No authentication token found');
+    if (!user || !lobbyRoomId) {
+      console.log('Cannot initialize socket:', {
+        hasUser: !!user,
+        hasLobbyRoomId: !!lobbyRoomId,
+        timestamp: new Date().toISOString()
+      });
       return;
     }
 
-    // Create socket with explicit URL and path
-    const newSocket = io('/', {  // Use relative URL to work with proxy
-      auth: { token },
-      withCredentials: true,
-      transports: ['polling', 'websocket'],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      timeout: 20000,
-      path: '/socket.io/',
-      autoConnect: true,
-      forceNew: true,
-      rejectUnauthorized: false
+    console.log('Initializing socket connection:', {
+      userId: user._id,
+      username: user.username,
+      lobbyRoomId,
+      timestamp: new Date().toISOString()
     });
 
-    // Log connection attempts
-    console.log('Attempting to connect to Socket.IO server...');
+    const token = localStorage.getItem('token');
+    if (!token) {
+      console.error('No authentication token found for socket connection:', {
+        userId: user._id,
+        timestamp: new Date().toISOString()
+      });
+      setError('Authentication required. Please log in again.');
+      return;
+    }
 
+    const newSocket = io(import.meta.env.VITE_SERVER_URL, {
+      auth: {
+        token: token
+      },
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      forceNew: true
+    });
+
+    // Handle authentication
     newSocket.on('connect', () => {
-      console.log('Connected to server with transport:', newSocket.io.engine.transport.name);
-      setError(null);
-      
-      // Authenticate after connection
+      console.log('Socket connected, authenticating...', {
+        socketId: newSocket.id,
+        userId: user._id,
+        timestamp: new Date().toISOString()
+      });
+
+      // Authenticate immediately after connection
       newSocket.emit('authenticate', { token }, (response) => {
-        if (response.error) {
-          console.error('Authentication error:', response.error);
-          setError('Authentication failed: ' + response.error);
-        } else if (response.success) {
-          console.log('Authenticated as:', response.user.username);
+        if (response?.error) {
+          console.error('Socket authentication failed:', {
+            error: response.error,
+            socketId: newSocket.id,
+            userId: user._id,
+            timestamp: new Date().toISOString()
+          });
+          setError('Authentication failed. Please log in again.');
+          newSocket.disconnect();
+        } else {
+          console.log('Socket authenticated successfully:', {
+            socketId: newSocket.id,
+            userId: user._id,
+            username: user.username,
+            timestamp: new Date().toISOString()
+          });
+
+          // Join room immediately after successful authentication
+          if (lobbyRoomId) {
+            console.log('Joining room after authentication:', {
+              roomId: lobbyRoomId,
+              socketId: newSocket.id,
+              timestamp: new Date().toISOString()
+            });
+            newSocket.emit('joinRoom', lobbyRoomId);
+          }
         }
       });
     });
 
-    newSocket.on('connect_error', (err) => {
-      console.error('Socket connection error:', {
-        message: err.message,
-        description: err.description,
-        type: err.type,
-        transport: newSocket.io.engine?.transport?.name
-      });
-      setError('Failed to connect to server. Please try refreshing the page.');
-    });
-
-    newSocket.on('error', (err) => {
-      console.error('Socket error:', err);
-      setError(err.message || 'An error occurred');
-    });
-
+    // Handle room state updates
     newSocket.on('roomState', (state) => {
-      console.log('Room state updated:', state);
-      setRoomState(state);
+      // Only log if there's an issue with the state
+      if (!state || !state.participants) {
+        console.error('Invalid room state received:', {
+          roomId: state?._id,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Update room state immediately without logging
+      setRoomState(prevState => {
+        if (!prevState) return state;
+
+        const existingParticipants = new Map(
+          prevState.participants?.map(p => [p.user._id, p]) || []
+        );
+
+        const updatedParticipants = state.participants.map(participant => {
+          const existingParticipant = existingParticipants.get(participant.user._id);
+          const isCurrentUser = participant.user._id === user._id;
+
+          if (!existingParticipant) {
+            return {
+              ...participant,
+              lastPosition: { ...participant.position }
+            };
+          }
+
+          if (existingParticipant.position.x !== participant.position.x || 
+              existingParticipant.position.y !== participant.position.y) {
+            return {
+              ...participant,
+              lastPosition: isCurrentUser ? 
+                existingParticipant.lastPosition : 
+                { ...existingParticipant.position }
+            };
+          }
+
+          return existingParticipant;
+        });
+
+        return {
+          ...state,
+          participants: updatedParticipants,
+          _lastUpdate: Date.now()
+        };
+      });
     });
 
-    newSocket.on('userJoined', (userData) => {
-      console.log('User joined:', userData);
-      setMessages(prev => [...prev, {
-        type: 'system',
-        message: `${userData.username} joined the room`,
-        createdAt: new Date().toISOString()
-      }]);
+    // Handle errors
+    newSocket.on('error', (error) => {
+      console.error('Socket error:', {
+        error: error.message,
+        socketId: newSocket.id,
+        timestamp: new Date().toISOString()
+      });
+      setError(error.message);
     });
 
-    newSocket.on('userLeft', (userData) => {
-      console.log('User left:', userData);
-      setMessages(prev => [...prev, {
-        type: 'system',
-        message: `${userData.username} left the room`,
-        createdAt: new Date().toISOString()
-      }]);
-    });
-
-    newSocket.on('newMessage', (message) => {
-      console.log('New message received:', message);
-      setMessages(prev => [...prev, {
-        ...message,
-        type: 'chat'
-      }]);
+    // Handle disconnection
+    newSocket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', {
+        reason,
+        socketId: newSocket.id,
+        timestamp: new Date().toISOString()
+      });
     });
 
     setSocket(newSocket);
 
-    // Cleanup on unmount
     return () => {
-      if (newSocket) {
-        console.log('Cleaning up socket connection...');
-        newSocket.removeAllListeners();
-        newSocket.close();
-      }
+      console.log('Cleaning up socket connection:', {
+        socketId: newSocket.id,
+        userId: user._id,
+        timestamp: new Date().toISOString()
+      });
+      newSocket.disconnect();
     };
-  }, []);
+  }, [user, lobbyRoomId]);
 
   // Scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Join room when socket, user, and lobbyId are available
-  useEffect(() => {
-    if (socket && user && lobbyId && socket.connected) {
-      console.log('Attempting to join room:', {
-        socketId: socket.id,
-        userId: user._id,
-        lobbyId: lobbyId,
-        isConnected: socket.connected
-      });
+  // Handle player movement
+  const handlePlayerMove = useCallback((newPosition) => {
+    if (!socket?.connected || !user || !lobbyRoomId) {
+      console.warn('Cannot send movement update - missing requirements');
+      return;
+    }
 
-      socket.emit('joinRoom', lobbyId, (response) => {
-        if (response?.error) {
-          console.error('Error joining room:', response.error);
-          setError('Failed to join room: ' + response.error);
-        } else {
-          console.log('Successfully joined room:', response);
-          // Update room state with the response if available
-          if (response) {
-            setRoomState(prev => ({
-              ...prev,
-              ...response
-            }));
-          }
+    // Update local state immediately without logging
+    setRoomState(prevState => {
+      if (!prevState) return prevState;
+
+      const updatedParticipants = prevState.participants.map(participant => {
+        if (participant.user._id === user._id) {
+          const lastPosition = { ...participant.position };
+          return {
+            ...participant,
+            position: newPosition,
+            lastPosition
+          };
         }
+        return participant;
       });
-    } else {
-      console.log('Cannot join room:', {
-        hasSocket: !!socket,
-        hasUser: !!user,
-        hasLobbyId: !!lobbyId,
-        isConnected: socket?.connected
-      });
-    }
-  }, [socket, user, lobbyId]);
 
-  // Handle room state updates
+      return {
+        ...prevState,
+        participants: updatedParticipants,
+        _lastUpdate: Date.now()
+      };
+    });
+
+    // Send movement update to server without logging
+    socket.emit('userMove', {
+      roomId: lobbyRoomId,
+      position: newPosition
+    });
+  }, [socket, user, lobbyRoomId]);
+
+  // Handle user joined events - remove logging
   useEffect(() => {
     if (socket) {
-      const handleRoomState = (newRoomState) => {
-        console.log('Received room state update:', {
-          roomId: newRoomState._id,
-          roomName: newRoomState.name,
-          participants: newRoomState.participants?.length,
-          currentUser: user?._id,
-          participants: newRoomState.participants?.map(p => ({
-            userId: p.user._id,
-            username: p.user.username,
-            position: p.position
-          }))
-        });
-
-        setRoomState(newRoomState);
-      };
-
-      socket.on('roomState', handleRoomState);
-
-      // Join lobby room if not already in a room
-      if (!roomState?._id && lobbyId) {
-        console.log('Joining lobby room with ID:', lobbyId);
-        socket.emit('joinRoom', lobbyId);
-      }
-
-      return () => {
-        socket.off('roomState', handleRoomState);
-      };
-    }
-  }, [socket, user, roomState, lobbyId]);
-
-  // Handle user joined events
-  useEffect(() => {
-    if (socket) {
-      const handleUserJoined = (data) => {
-        console.log('User joined room:', data);
+      const handleUserJoined = () => {
         // Room state will be updated via roomState event
       };
 
-      const handleUserLeft = (data) => {
-        console.log('User left room:', data);
+      const handleUserLeft = () => {
         // Room state will be updated via roomState event
       };
 
@@ -255,25 +327,23 @@ export const MainRoom = () => {
     }
   }, [socket]);
 
-  // Debug log for room state changes
+  // Remove debug log for room state changes
   useEffect(() => {
-    if (roomState) {
-      console.log('Room state changed:', {
-        roomId: roomState._id,
-        roomName: roomState.name,
-        participants: roomState.participants?.length,
-        currentUser: user?._id,
-        hasGameCanvas: !!roomState.objects?.length
+    // Only log when room state is missing or has errors
+    if (!roomState || !roomState.participants) {
+      console.log('Room state issue:', {
+        hasRoomState: !!roomState,
+        hasParticipants: !!roomState?.participants,
+        timestamp: new Date().toISOString()
       });
     }
-  }, [roomState, user]);
+  }, [roomState]);
 
-  // Handle user movement updates from other players
+  // Handle user movement updates - remove logging
   useEffect(() => {
     if (!socket) return;
 
     const handleUserMoved = (data) => {
-      console.log('User moved:', data);
       setRoomState(prev => {
         if (!prev) return prev;
 
@@ -301,93 +371,28 @@ export const MainRoom = () => {
     };
   }, [socket]);
 
-  // Handle player movement
-  const handlePlayerMove = (position) => {
-    console.log('handlePlayerMove called with position:', {
-      position,
-      hasSocket: !!socket,
-      socketConnected: socket?.connected,
-      hasRoomState: !!roomState,
-      roomId: roomState?._id,
-      userId: user?._id
-    });
+  // Add socket event listener for room state updates - remove logging
+  useEffect(() => {
+    if (!socket) return;
 
-    if (!socket?.connected || !roomState?._id) {
-      console.log('Cannot send movement:', {
-        hasSocket: !!socket,
-        isConnected: socket?.connected,
-        hasRoom: !!roomState,
-        roomId: roomState?._id
-      });
-      return;
-    }
-
-    // Emit movement to server
-    console.log('Emitting userMove event:', {
-      roomId: roomState._id,
-      position,
-      socketId: socket.id
-    });
-
-    socket.emit('userMove', {
-      roomId: roomState._id,
-      position
-    }, (response) => {
-      console.log('userMove response:', response);
-      if (response?.error) {
-        console.error('Error sending movement:', response.error);
-        setError('Failed to update position: ' + response.error);
+    const handleRoomStateUpdate = (room) => {
+      if (room?.participants?.[0]) {
+        handlePlayerMove(room.participants[0].position);
       }
-    });
+    };
 
-    // Update local state immediately for smooth movement
-    setRoomState(prev => {
-      if (!prev) {
-        console.log('No previous room state to update');
-        return prev;
-      }
+    socket.on('roomState', handleRoomStateUpdate);
 
-      console.log('Updating local room state with new position:', {
-        userId: user._id,
-        oldPosition: prev.participants.find(p => p.user._id === user._id)?.position,
-        newPosition: position
-      });
+    return () => {
+      socket.off('roomState', handleRoomStateUpdate);
+    };
+  }, [socket, handlePlayerMove]);
 
-      const updatedParticipants = prev.participants.map(p => {
-        if (p.user._id === user._id) {
-          return {
-            ...p,
-            position
-          };
-        }
-        return p;
-      });
-
-      return {
-        ...prev,
-        participants: updatedParticipants
-      };
-    });
-  };
-
+  // Handle chat messages - keep minimal logging for errors only
   const handleSendMessage = (e) => {
     e.preventDefault();
-    console.log('Attempting to send message:', {
-      message: newMessage.trim(),
-      hasSocket: !!socket,
-      socketConnected: socket?.connected,
-      hasRoom: !!roomState,
-      roomId: roomState?._id
-    });
 
     if (!newMessage.trim() || !socket?.connected || !roomState?._id) {
-      console.log('Cannot send message:', {
-        hasMessage: !!newMessage.trim(),
-        hasSocket: !!socket,
-        isConnected: socket?.connected,
-        hasRoom: !!roomState,
-        roomId: roomState?._id
-      });
       return;
     }
 
@@ -396,16 +401,12 @@ export const MainRoom = () => {
       message: newMessage.trim()
     };
 
-    console.log('Emitting chatMessage event:', messageData);
-
     socket.emit('chatMessage', messageData, (response) => {
-      console.log('Chat message response:', response);
       if (response?.error) {
-        console.error('Error sending message:', response.error);
+        console.error('Chat error:', response.error);
         setError('Failed to send message: ' + response.error);
       } else {
-        // Add message to local state immediately
-        setMessages(prev => [...prev, {
+        const localMessage = {
           type: 'chat',
           user: {
             _id: user._id,
@@ -413,7 +414,9 @@ export const MainRoom = () => {
           },
           message: newMessage.trim(),
           createdAt: new Date().toISOString()
-        }]);
+        };
+        
+        setMessages(prev => [...prev, localMessage]);
         setNewMessage('');
       }
     });
@@ -426,21 +429,17 @@ export const MainRoom = () => {
     logout();
   };
 
-  // Debug log for room state and socket
+  // Remove debug log for room state and socket
   useEffect(() => {
-    console.log('MainRoom state:', {
-      hasSocket: !!socket,
-      socketConnected: socket?.connected,
-      socketId: socket?.id,
-      hasRoomState: !!roomState,
-      roomId: roomState?._id,
-      roomName: roomState?.name,
-      participants: roomState?.participants?.length,
-      objects: roomState?.objects?.length,
-      objectsData: roomState?.objects,
-      messages: messages.length
-    });
-  }, [socket, roomState, messages]);
+    // Only log critical state changes
+    if (!socket?.connected || !roomState) {
+      console.log('Critical connection state:', {
+        socketConnected: socket?.connected,
+        hasRoomState: !!roomState,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, [socket, roomState]);
 
   if (error) {
     return (

@@ -10,7 +10,7 @@ const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/authRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const User = require('./models/UserModel');
-const Room = require('./models/Room');g
+const Room = require('./models/Room');
 
 // Function to create initial game objects for a room
 async function createInitialGameObjects(room) {
@@ -129,89 +129,86 @@ const io = new Server(server, {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('Socket.IO connection attempt:', {
+  // Only log critical connection info
+  console.log('New socket connection:', {
     id: socket.id,
-    transport: socket.conn.transport.name,
-    handshake: {
-      query: socket.handshake.query,
-      headers: socket.handshake.headers
-    }
+    transport: socket.conn.transport.name
   });
 
   // Handle authentication
   socket.on('authenticate', async (data, callback) => {
     try {
-      console.log('Authentication attempt:', {
-        socketId: socket.id,
-        data: data,
-        transport: socket.conn.transport.name
-      });
+      if (!data || typeof data !== 'object') {
+        console.error('Invalid authentication data:', socket.id);
+        return callback?.({ error: 'Invalid authentication data' });
+      }
 
-      const token = data.token || socket.handshake.query.token;
-      
+      const token = data.token;
       if (!token) {
-        console.log('No token provided');
-        return callback({ error: 'No token provided' });
+        console.error('No token provided:', socket.id);
+        return callback?.({ error: 'No token provided' });
       }
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log('Token decoded:', decoded);
-
-      const user = await User.findById(decoded.userId);
-      if (!user) {
-        console.log('User not found:', decoded.userId);
-        return callback({ error: 'User not found' });
-      }
-
-      console.log('User authenticated:', user.username);
-      socket.user = user;
-      
-      // Send success response
-      callback({ 
-        success: true, 
-        user: { 
-          username: user.username, 
-          id: user._id 
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.userId);
+        
+        if (!user) {
+          console.error('User not found:', decoded.userId);
+          return callback?.({ error: 'User not found' });
         }
-      });
 
-      // After successful authentication, try to join the lobby
-      if (user.currentRoom) {
-        socket.emit('joinRoom', user.currentRoom);
+        // Store user in socket
+        socket.user = user;
+        socket.userId = user._id;
+        
+        console.log('User authenticated:', {
+          userId: user._id,
+          username: user.username,
+          socketId: socket.id
+        });
+
+        callback?.({ 
+          success: true, 
+          user: { 
+            username: user.username, 
+            id: user._id 
+          }
+        });
+
+        // Join current room after authentication
+        if (user.currentRoom) {
+          socket.emit('joinRoom', user.currentRoom);
+        }
+      } catch (jwtError) {
+        console.error('JWT verification failed:', jwtError.message);
+        return callback?.({ error: 'Invalid token' });
       }
     } catch (error) {
-      console.error('Authentication error:', error);
-      callback({ error: error.message });
+      console.error('Authentication error:', error.message);
+      callback?.({ error: error.message });
     }
   });
 
   socket.on('error', (error) => {
     console.error('Socket error:', {
       socketId: socket.id,
-      error: error,
-      transport: socket.conn.transport.name
+      error: error.message
     });
   });
 
   socket.on('disconnect', (reason) => {
     console.log('Socket disconnected:', {
       socketId: socket.id,
-      reason: reason,
-      transport: socket.conn.transport.name,
-      user: socket.user?.username
+      reason,
+      username: socket.user?.username
     });
   });
 
   // Handle user joining a room
   socket.on('joinRoom', async (roomIdentifier) => {
     try {
-      console.log('User attempting to join room:', {
-        userId: socket.user._id,
-        username: socket.user.username,
-        roomIdentifier
-      });
-
-      // Try to find room by ID first, then by name
+      // Find room
       let room = await Room.findById(roomIdentifier);
       if (!room) {
         room = await Room.findOne({ name: roomIdentifier });
@@ -222,6 +219,13 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Room not found' });
         return;
       }
+          room.participants = room.participants.map(participant => {
+        if (!participant.lastPosition) {
+          participant.lastPosition = { ...participant.position };
+        }
+        return participant;
+      });
+      await room.save();
 
       // Check if user is already in the room
       const isParticipant = room.participants.some(
@@ -229,15 +233,12 @@ io.on('connection', (socket) => {
       );
 
       if (!isParticipant) {
-        console.log('Adding user to room participants:', {
-          userId: socket.user._id,
-          username: socket.user.username,
-          roomId: room._id,
-          roomName: room.name
-        });
-
         // Add user to room with initial position
-        await room.addParticipant(socket.user._id, { x: 100, y: 100 });
+        const initialPosition = { x: 100, y: 100 };
+        await room.addParticipant(socket.user._id, {
+          position: initialPosition,
+          lastPosition: { ...initialPosition }
+        });
       }
 
       // Leave current room if any
@@ -250,32 +251,24 @@ io.on('connection', (socket) => {
       socket.user.currentRoom = roomIdentifier;
       await socket.user.save();
 
-      // Populate room with full user details including avatar
+      // Populate room with user details
       await room.populate('participants.user', 'username avatar isOnline');
       await room.populate('createdBy', 'username avatar');
 
       // Notify room of new participant
+      const participant = room.participants.find(p => p.user._id.toString() === socket.user._id.toString());
       io.to(roomIdentifier).emit('userJoined', {
         userId: socket.user._id,
         username: socket.user.username,
         avatar: socket.user.avatar,
-        position: { x: 100, y: 100 }
+        position: participant.position,
+        lastPosition: participant.lastPosition
       });
 
-      // Send updated room state to all clients in the room
-      console.log('Broadcasting room state after join:', {
-        roomId: room._id,
-        participants: room.participants.map(p => ({
-          userId: p.user._id,
-          username: p.user.username,
-          avatar: p.user.avatar,
-          position: p.position
-        }))
-      });
-
+      // Send updated room state
       io.to(roomIdentifier).emit('roomState', room);
     } catch (error) {
-      console.error('Error in joinRoom:', error);
+      console.error('Error in joinRoom:', error.message);
       socket.emit('error', { message: error.message });
     }
   });
@@ -283,103 +276,105 @@ io.on('connection', (socket) => {
   // Handle user movement
   socket.on('userMove', async (data) => {
     try {
-      console.log('Received movement event:', {
-        socketId: socket.id,
-        userId: socket.user?._id,
-        username: socket.user?.username,
-        data
-      });
+      if (!socket.user || !socket.userId) {
+        console.error('No user associated with socket for movement:', socket.id);
+        return;
+      }
+
+      // Validate movement data
+      if (!data || typeof data !== 'object') {
+        console.error('Invalid movement data format:', socket.id);
+        return;
+      }
 
       const { roomId, position } = data;
       
-      // Update user position in room
+      if (!roomId || !position || typeof position.x !== 'number' || typeof position.y !== 'number') {
+        console.error('Invalid movement data:', socket.id);
+        return;
+      }
+
+      // Find room and update participant position
       const room = await Room.findById(roomId)
         .populate('participants.user', 'username avatar isOnline');
-      
+
       if (!room) {
         console.error('Room not found for movement:', roomId);
         return;
       }
 
-      console.log('Found room for movement:', {
-        roomId: room._id,
-        roomName: room.name,
-        participants: room.participants.length,
-        movingUser: socket.user._id
-      });
-
+      // Find the participant
       const participant = room.participants.find(
         p => p.user._id.toString() === socket.user._id.toString()
       );
 
-      if (participant) {
-        console.log('Updating participant position:', {
+      if (!participant) {
+        console.error('User not in room:', {
           userId: socket.user._id,
-          username: socket.user.username,
-          oldPosition: participant.position,
-          newPosition: position
+          roomId: room._id
+        });
+        return;
+      }
+
+      // Validate position is within room bounds
+      const bounds = {
+        minX: 20,
+        maxX: 780,
+        minY: 20,
+        maxY: 580
+      };
+
+      const validatedPosition = {
+        x: Math.max(bounds.minX, Math.min(bounds.maxX, position.x)),
+        y: Math.max(bounds.minY, Math.min(bounds.maxY, position.y))
+      };
+
+      // Only update if position actually changed
+      if (participant.position.x !== validatedPosition.x || participant.position.y !== validatedPosition.y) {
+        // Store the last position before updating
+        participant.lastPosition = { ...participant.position };
+        participant.position = validatedPosition;
+        participant.lastActive = new Date();
+
+        // Ensure all participants have lastPosition set
+        room.participants = room.participants.map(p => {
+          if (!p.lastPosition) {
+            p.lastPosition = { ...p.position };
+          }
+          return p;
         });
 
-        participant.position = position;
+        // Save and broadcast
         await room.save();
-        
-        // Broadcast updated room state to all clients in the room
         io.to(roomId).emit('roomState', room);
-        
-        console.log('Broadcasted room state update:', {
-          roomId: room._id,
-          participants: room.participants.map(p => ({
-            userId: p.user._id,
-            username: p.user.username,
-            avatar: p.user.avatar,
-            position: p.position
-          }))
-        });
-      } else {
-        console.error('Participant not found in room:', {
-          userId: socket.user._id,
-          roomId: room._id,
-          participants: room.participants.map(p => p.user._id.toString())
-        });
       }
     } catch (error) {
-      console.error('Error handling user movement:', error);
-      socket.emit('error', { message: error.message });
+      console.error('Error handling user movement:', error.message);
     }
   });
 
   // Handle chat messages
-  socket.on('chatMessage', async (data) => {
+  socket.on('chatMessage', async (data, callback) => {
     try {
-      console.log('Received chat message:', {
-        socketId: socket.id,
-        userId: socket.user?._id,
-        username: socket.user?.username,
-        data: data
-      });
-
-      const { roomId, message } = data;
-      const room = await Room.findById(roomId);
-      
-      if (!room) {
-        console.log('Room not found:', roomId);
-        socket.emit('error', { message: 'Room not found' });
-        return;
+      if (!socket.user) {
+        console.error('No user associated with socket:', socket.id);
+        return callback?.({ error: 'User not authenticated' });
       }
 
-      console.log('Found room:', {
-        roomId: room._id,
-        name: room.name,
-        participants: room.participants.length
-      });
+      const { roomId, message } = data;
+      if (!roomId || !message) {
+        console.error('Invalid message data:', socket.id);
+        return callback?.({ error: 'Invalid message data' });
+      }
+
+      const room = await Room.findById(roomId);
+      if (!room) {
+        console.error('Room not found:', roomId);
+        return callback?.({ error: 'Room not found' });
+      }
 
       // Add message to room
       const chatMessage = await room.addChatMessage(socket.user._id, message);
-      console.log('Message added to room:', {
-        messageId: chatMessage._id,
-        content: chatMessage.message,
-        timestamp: chatMessage.createdAt
-      });
 
       // Broadcast message to room
       const messageToEmit = {
@@ -390,12 +385,12 @@ io.on('connection', (socket) => {
           avatar: socket.user.avatar
         }
       };
-      console.log('Broadcasting message:', messageToEmit);
       
       io.to(roomId).emit('newMessage', messageToEmit);
+      callback?.({ success: true, messageId: chatMessage._id });
     } catch (error) {
-      console.error('Error handling chat message:', error);
-      socket.emit('error', { message: error.message });
+      console.error('Error handling chat message:', error.message);
+      callback?.({ error: error.message });
     }
   });
 
