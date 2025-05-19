@@ -114,8 +114,19 @@ roomSchema.methods.addParticipant = async function(userId, position = { x: 0, y:
 
 // Method to remove a participant from the room
 roomSchema.methods.removeParticipant = async function(userId) {
-  this.participants = this.participants.filter(p => p.user.toString() !== userId.toString());
-  return this.save();
+  const index = this.participants.findIndex(p => p.user._id === userId);
+  if (index !== -1) {
+    this.participants.splice(index, 1);
+  }
+  try {
+    await this.save();
+  } catch (e) {
+    if (e.code === 11000) {
+      console.log("Ignoring parallel save (or duplicate key) (or \"Can't save() the same doc multiple times in parallel\") (" + e.message + ")");
+    } else {
+      throw e;
+    }
+  }
 };
 
 // Method to add a chat message

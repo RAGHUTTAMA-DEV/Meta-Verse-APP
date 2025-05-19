@@ -1,74 +1,62 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-
-const TILE_SIZE = 20;
-const PLAYER_SIZE = 30;
-const MOVEMENT_SPEED = 3;
+import MainScene from './scenes/MainScene';
 
 const PhaserGame = ({ roomState, socket, user }) => {
-  const phaserRef = useRef(null);
   const gameRef = useRef(null);
-  const latestRoomState = useRef(roomState);
-  const latestSocket = useRef(socket);
-  const latestUser = useRef(user);
-
-  // Keep refs up to date
-  useEffect(() => { latestRoomState.current = roomState; }, [roomState]);
-  useEffect(() => { latestSocket.current = socket; }, [socket]);
-  useEffect(() => { latestUser.current = user; }, [user]);
+  const sceneRef = useRef(null);
 
   useEffect(() => {
-    if (!roomState || !user) return;
-    if (gameRef.current) return; // Prevent multiple inits
+    // Debug log for props
+    console.log('PhaserGame props:', {
+      hasSocket: !!socket,
+      socketConnected: socket?.connected,
+      socketId: socket?.id,
+      hasRoomState: !!roomState,
+      roomId: roomState?._id,
+      roomName: roomState?.name,
+      hasUser: !!user,
+      userId: user?._id
+    });
 
-    // Minimal debug scene (temporary) – only logs "create()" and "update()" (and "update event fired" every frame)
-    class MinimalScene extends Phaser.Scene {
-      constructor() {
-        super('MinimalScene');
-      }
+    if (!gameRef.current) {
+      const config = {
+        type: Phaser.AUTO,
+        width: 800,
+        height: 600,
+        scene: [MainScene],
+        physics: { default: 'arcade' },
+        parent: 'phaser-game',
+        transparent: false,
+        backgroundColor: '#f7fafc'
+      };
 
-      preload() {}
-
-      create() {
-        console.log("MinimalScene create() called – update() should now run every frame");
-        this.events.on("update", () => { console.log("update event fired"); });
-      }
-
-      update() {
-        console.log("MinimalScene update() called");
-      }
+      gameRef.current = new Phaser.Game(config);
+      
+      // Wait for the scene to be ready
+      gameRef.current.events.once('ready', () => {
+        sceneRef.current = gameRef.current.scene.getScene('MainScene');
+        // Initialize scene with current data
+        if (sceneRef.current) {
+          sceneRef.current.events.emit('updateData', { roomState, socket, user });
+        }
+      });
+    } else if (sceneRef.current) {
+      // Update existing scene with new data
+      sceneRef.current.events.emit('updateData', { roomState, socket, user });
     }
 
-    const config = {
-      type: Phaser.AUTO,
-      width: 800,
-      height: 600,
-      backgroundColor: '#f7fafc',
-      parent: phaserRef.current,
-      scene: MinimalScene,
-      physics: { default: 'arcade', arcade: { debug: false } },
-      scale: { mode: Phaser.Scale.NONE },
-      audio: { noAudio: true }
-    };
-
-    gameRef.current = new Phaser.Game(config);
-    console.log("Phaser game instance created (using MinimalScene)");
-
+    // Cleanup
     return () => {
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
-        console.log("Phaser game destroyed");
+        sceneRef.current = null;
       }
     };
-  }, [roomState, user, socket]);
+  }, [roomState?._id, socket?.id, user?._id]); // Only recreate on key changes
 
-  return (
-    <div
-      ref={phaserRef}
-      style={{ width: 800, height: 600, margin: '0 auto', border: '1px solid #e2e8f0', borderRadius: 4 }}
-    />
-  );
+  return <div id="phaser-game" className="w-full h-full" />;
 };
 
-export default PhaserGame; 
+export default PhaserGame;

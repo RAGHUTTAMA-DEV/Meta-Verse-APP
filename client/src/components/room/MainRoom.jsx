@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAuth, axios } from '../../context/AuthContext';
 import { io } from 'socket.io-client';
-import GameCanvas from '../game/GameCanvas';
+import PhaserGame from '../game/PhaserGame';
 
 export const MainRoom = () => {
   const { user, logout } = useAuth();
@@ -523,11 +523,11 @@ export const MainRoom = () => {
               </div>
             ) : (
               <>
-                <GameCanvas
+                <PhaserGame
                   key={`game-canvas-${roomState._id}`}
                   roomState={roomState}
                   socket={socket}
-                  onPlayerMove={handlePlayerMove}
+                  user={user}
                 />
                 {/* Debug overlay */}
                 <div className="absolute top-0 right-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
