@@ -1,6 +1,14 @@
 const Room = require('../models/Room');
 const User = require('../models/UserModel');
 
+// Helper function for consistent API responses
+const apiResponse = (res, status, data = null, error = null) => {
+  const response = { status: status < 400 ? 'success' : 'error' };
+  if (data) response.data = data;
+  if (error) response.error = error;
+  return res.status(status).json(response);
+};
+
 // Create a new room
 const createRoom = async (req, res) => {
   try {
@@ -9,7 +17,7 @@ const createRoom = async (req, res) => {
     // Check if room name already exists
     const existingRoom = await Room.findOne({ name });
     if (existingRoom) {
-      return res.status(400).json({ error: 'Room name already exists' });
+      return apiResponse(res, 400, null, 'Room name already exists');
     }
 
     const room = new Room({
@@ -25,9 +33,9 @@ const createRoom = async (req, res) => {
     await room.addParticipant(req.user._id, { x: 0, y: 0 });
     await room.save();
 
-    res.status(201).json({ room });
+    return apiResponse(res, 201, { room });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -44,8 +52,13 @@ const getRooms = async (req, res) => {
 
     // If name is provided, add it to the query
     if (name) {
-      query.name = name;
+      query.name = { $regex: new RegExp(`^${name}$`, 'i') }; // Case-insensitive exact match
     }
+
+    console.log('Fetching rooms with query:', {
+      query,
+      timestamp: new Date().toISOString()
+    });
 
     const rooms = await Room.find(query)
       .populate('createdBy', 'username avatar')
@@ -53,11 +66,60 @@ const getRooms = async (req, res) => {
       .select('-password')
       .sort({ isSystemRoom: -1, createdAt: 1 }); // System rooms first, then by creation date
 
-    console.log('Found rooms:', rooms.map(r => ({ name: r.name, isSystemRoom: r.isSystemRoom })));
-    res.json({ rooms });
+    console.log('Found rooms:', {
+      count: rooms.length,
+      rooms: rooms.map(r => ({ 
+        id: r._id,
+        name: r.name, 
+        isSystemRoom: r.isSystemRoom,
+        participantCount: r.participants?.length || 0
+      })),
+      timestamp: new Date().toISOString()
+    });
+
+    // If specifically looking for lobby and not found, ensure it exists
+    if (name === 'Lobby' && rooms.length === 0) {
+      console.log('Lobby room not found, creating it...');
+      const lobbyRoom = await Room.findOneAndUpdate(
+        { name: 'Lobby', isSystemRoom: true },
+        {
+          name: 'Lobby',
+          description: 'Main lobby room for all users',
+          isSystemRoom: true,
+          isPrivate: false,
+          settings: {
+            maxParticipants: 100,
+            allowChat: true,
+            allowVoice: true
+          }
+        },
+        { 
+          upsert: true, 
+          new: true,
+          setDefaultsOnInsert: true 
+        }
+      )
+      .populate('createdBy', 'username avatar')
+      .populate('participants.user', 'username avatar isOnline')
+      .select('-password');
+
+      // Add initial game objects if needed
+      if (!lobbyRoom.objects || lobbyRoom.objects.length === 0) {
+        await createInitialGameObjects(lobbyRoom);
+        await lobbyRoom.save();
+      }
+
+      return apiResponse(res, 200, { rooms: [lobbyRoom] });
+    }
+
+    return apiResponse(res, 200, { rooms });
   } catch (error) {
-    console.error('Error fetching rooms:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error fetching rooms:', {
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    });
+    return apiResponse(res, 500, null, 'Failed to fetch rooms: ' + error.message);
   }
 };
 
@@ -70,12 +132,12 @@ const getRoom = async (req, res) => {
       .select('-password');
 
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return apiResponse(res, 404, null, 'Room not found');
     }
 
-    res.json({ room });
+    return apiResponse(res, 200, { room });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return apiResponse(res, 500, null, error.message);
   }
 };
 
@@ -87,17 +149,17 @@ const joinRoom = async (req, res) => {
 
     const room = await Room.findById(roomId);
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return apiResponse(res, 404, null, 'Room not found');
     }
 
     // Check if room is private and password is correct
     if (room.isPrivate) {
       if (!password) {
-        return res.status(401).json({ error: 'Password required for private room' });
+        return apiResponse(res, 401, null, 'Password required for private room');
       }
       const isMatch = await room.comparePassword(password);
       if (!isMatch) {
-        return res.status(401).json({ error: 'Invalid password' });
+        return apiResponse(res, 401, null, 'Invalid password');
       }
     }
 
@@ -107,7 +169,7 @@ const joinRoom = async (req, res) => {
     );
 
     if (isParticipant) {
-      return res.status(400).json({ error: 'Already in room' });
+      return apiResponse(res, 400, null, 'Already in room');
     }
 
     // Add user to room
@@ -117,9 +179,9 @@ const joinRoom = async (req, res) => {
     req.user.currentRoom = roomId;
     await req.user.save();
 
-    res.json({ room });
+    return apiResponse(res, 200, { room });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -130,7 +192,7 @@ const leaveRoom = async (req, res) => {
     const room = await Room.findById(roomId);
 
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return apiResponse(res, 404, null, 'Room not found');
     }
 
     // Remove user from room
@@ -140,9 +202,9 @@ const leaveRoom = async (req, res) => {
     req.user.currentRoom = 'lobby';
     await req.user.save();
 
-    res.json({ message: 'Left room successfully' });
+    return apiResponse(res, 200, { message: 'Left room successfully' });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -154,12 +216,12 @@ const updateRoom = async (req, res) => {
     const room = await Room.findById(roomId);
 
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return apiResponse(res, 404, null, 'Room not found');
     }
 
     // Check if user is room creator
     if (room.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ error: 'Only room creator can update settings' });
+      return apiResponse(res, 403, null, 'Only room creator can update settings');
     }
 
     // Update allowed fields
@@ -171,9 +233,9 @@ const updateRoom = async (req, res) => {
     });
 
     await room.save();
-    res.json({ room });
+    return apiResponse(res, 200, { room });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -184,12 +246,12 @@ const deleteRoom = async (req, res) => {
     const room = await Room.findById(roomId);
 
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return apiResponse(res, 404, null, 'Room not found');
     }
 
     // Check if user is room creator
     if (room.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ error: 'Only room creator can delete room' });
+      return apiResponse(res, 403, null, 'Only room creator can delete room');
     }
 
     // Update all users in the room to return to lobby
@@ -199,9 +261,56 @@ const deleteRoom = async (req, res) => {
     );
 
     await room.deleteOne();
-    res.json({ message: 'Room deleted successfully' });
+    return apiResponse(res, 200, { message: 'Room deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return apiResponse(res, 500, null, error.message);
+  }
+};
+
+// Helper function to create initial game objects
+const createInitialGameObjects = async (room) => {
+  try {
+    // Create some walls
+    const walls = [
+      // Outer walls
+      { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 800, height: 20 } },
+      { type: 'wall', position: { x: 0, y: 580 }, properties: { color: '#4a5568', width: 800, height: 20 } },
+      { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
+      { type: 'wall', position: { x: 780, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
+      
+      // Inner walls and objects
+      { type: 'wall', position: { x: 200, y: 200 }, properties: { color: '#718096', width: 400, height: 20 } },
+      { type: 'wall', position: { x: 200, y: 400 }, properties: { color: '#718096', width: 400, height: 20 } },
+      { type: 'wall', position: { x: 300, y: 200 }, properties: { color: '#718096', width: 20, height: 220 } },
+      
+      // Interactive objects
+      { type: 'furniture', position: { x: 100, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 150, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 650, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      { type: 'furniture', position: { x: 700, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
+      
+      // Decorative objects
+      { type: 'decoration', position: { x: 400, y: 300 }, properties: { color: '#48bb78', type: 'plant' } },
+      { type: 'decoration', position: { x: 500, y: 500 }, properties: { color: '#f6ad55', type: 'table' } }
+    ];
+
+    // Add objects to room
+    room.objects = walls;
+    await room.save();
+    
+    console.log('Added initial game objects to room:', {
+      roomId: room._id,
+      name: room.name,
+      objectCount: walls.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error creating initial game objects:', {
+      error: error.message,
+      roomId: room._id,
+      timestamp: new Date().toISOString()
+    });
+    throw error;
   }
 };
 

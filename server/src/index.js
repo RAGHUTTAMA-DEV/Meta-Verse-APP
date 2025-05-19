@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
+const app = require('./app');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
@@ -89,234 +90,200 @@ async function ensureLobbyRoom() {
   }
 }
 
-// Initialize Express app
-const app = express();
+// Create HTTP server
 const server = http.createServer(app);
 
-// Middleware
-const allowedOrigins = ['http://localhost:5173', 'http://localhost:5173/', 'http://localhost:5000'];
-app.use(cors({
-  origin: true, // Allow all origins for testing
-  methods: ['GET', 'POST', 'OPTIONS'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(express.json());
-app.use(express.static('public')); // Serve static files from 'public' directory
-
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/rooms', roomRoutes);
-
-// Socket.IO setup
+// Socket.IO setup with improved configuration
 const io = new Server(server, {
   cors: {
-    origin: true, // Allow all origins for testing
+    origin: process.env.NODE_ENV === 'production' 
+      ? process.env.CLIENT_URL 
+      : true,
     methods: ['GET', 'POST', 'OPTIONS'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization']
   },
-  transports: ['polling', 'websocket'],
-  allowUpgrades: true,
+  transports: ['websocket'], // Force WebSocket only for better performance
+  allowUpgrades: false, // Disable transport upgrades
   pingTimeout: 60000,
   pingInterval: 25000,
   connectTimeout: 45000,
+  maxHttpBufferSize: 1e8, // 100MB max payload
   path: '/socket.io/',
   serveClient: false,
   cookie: false
 });
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  // Only log critical connection info
-  console.log('New socket connection:', {
-    id: socket.id,
-    transport: socket.conn.transport.name
-  });
+// Room state management
+const roomStates = new Map();
 
-  // Handle authentication
+// Helper function to get or create room state
+const getRoomState = async (roomId) => {
+  if (roomStates.has(roomId)) {
+    return roomStates.get(roomId);
+  }
+
+  const room = await Room.findById(roomId)
+    .populate('participants.user', 'username avatar isOnline')
+    .populate('createdBy', 'username avatar');
+
+  if (!room) {
+    throw new Error('Room not found');
+  }
+
+  roomStates.set(roomId, room);
+  return room;
+};
+
+// Helper function to broadcast room state
+const broadcastRoomState = async (roomId) => {
+  try {
+    const room = await getRoomState(roomId);
+    io.to(roomId).emit('roomState', room);
+  } catch (error) {
+    console.error('Error broadcasting room state:', error);
+  }
+};
+
+// Add movement throttling map
+const lastMoveTime = new Map();
+
+// Socket.IO connection handling with improved error handling
+io.on('connection', (socket) => {
+  let userId = null;
+  let currentRoomId = null;
+
+  // Handle authentication with improved security
   socket.on('authenticate', async (data, callback) => {
     try {
-      if (!data || typeof data !== 'object') {
-        console.error('Invalid authentication data:', socket.id);
-        return callback?.({ error: 'Invalid authentication data' });
-      }
-
-      const token = data.token;
-      if (!token) {
-        console.error('No token provided:', socket.id);
+      if (!data?.token) {
         return callback?.({ error: 'No token provided' });
       }
 
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findById(decoded.userId);
-        
-        if (!user) {
-          console.error('User not found:', decoded.userId);
-          return callback?.({ error: 'User not found' });
+      const decoded = jwt.verify(data.token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.userId).select('-password');
+      
+      if (!user) {
+        return callback?.({ error: 'User not found' });
+      }
+
+      // Store user info in socket
+      socket.user = user;
+      userId = user._id;
+      
+      // Update user's online status
+      user.isOnline = true;
+      user.lastSeen = new Date();
+      await user.save();
+
+      callback?.({ 
+        success: true, 
+        user: { 
+          username: user.username, 
+          id: user._id,
+          avatar: user.avatar
         }
+      });
 
-        // Store user in socket
-        socket.user = user;
-        socket.userId = user._id;
-        
-        console.log('User authenticated:', {
-          userId: user._id,
-          username: user.username,
-          socketId: socket.id
-        });
-
-        callback?.({ 
-          success: true, 
-          user: { 
-            username: user.username, 
-            id: user._id 
-          }
-        });
-
-        // Join current room after authentication
-        if (user.currentRoom) {
-          socket.emit('joinRoom', user.currentRoom);
-        }
-      } catch (jwtError) {
-        console.error('JWT verification failed:', jwtError.message);
-        return callback?.({ error: 'Invalid token' });
+      // Join user's current room if any
+      if (user.currentRoom) {
+        socket.emit('joinRoom', user.currentRoom);
       }
     } catch (error) {
-      console.error('Authentication error:', error.message);
+      console.error('Authentication error:', error);
       callback?.({ error: error.message });
     }
   });
 
-  socket.on('error', (error) => {
-    console.error('Socket error:', {
-      socketId: socket.id,
-      error: error.message
-    });
-  });
-
-  socket.on('disconnect', (reason) => {
-    console.log('Socket disconnected:', {
-      socketId: socket.id,
-      reason,
-      username: socket.user?.username
-    });
-  });
-
-  // Handle user joining a room
-  socket.on('joinRoom', async (roomIdentifier) => {
+  // Handle room joining with improved state management
+  socket.on('joinRoom', async (roomId) => {
     try {
-      // Find room
-      let room = await Room.findById(roomIdentifier);
-      if (!room) {
-        room = await Room.findOne({ name: roomIdentifier });
+      if (!userId) {
+        throw new Error('User not authenticated');
       }
+
+      const room = await getRoomState(roomId);
       
-      if (!room) {
-        console.error('Room not found:', roomIdentifier);
-        socket.emit('error', { message: 'Room not found' });
-        return;
-      }
-          room.participants = room.participants.map(participant => {
-        if (!participant.lastPosition) {
-          participant.lastPosition = { ...participant.position };
-        }
-        return participant;
-      });
-      await room.save();
-
-      // Check if user is already in the room
-      const isParticipant = room.participants.some(
-        p => p.user._id.toString() === socket.user._id.toString()
-      );
-
-      if (!isParticipant) {
-        // Add user to room with initial position
-        const initialPosition = { x: 100, y: 100 };
-        await room.addParticipant(socket.user._id, {
-          position: initialPosition,
-          lastPosition: { ...initialPosition }
-        });
-      }
-
       // Leave current room if any
-      if (socket.user.currentRoom && socket.user.currentRoom !== roomIdentifier) {
-        socket.leave(socket.user.currentRoom);
+      if (currentRoomId && currentRoomId !== roomId) {
+        socket.leave(currentRoomId);
+        await handleRoomLeave(currentRoomId);
       }
 
       // Join new room
-      socket.join(roomIdentifier);
-      socket.user.currentRoom = roomIdentifier;
-      await socket.user.save();
+      socket.join(roomId);
+      currentRoomId = roomId;
 
-      // Populate room with user details
-      await room.populate('participants.user', 'username avatar isOnline');
-      await room.populate('createdBy', 'username avatar');
+      // Update user's current room
+      const user = await User.findById(userId);
+      user.currentRoom = roomId;
+      await user.save();
+
+      // Add user to room if not already present
+      const isParticipant = room.participants.some(
+        p => p.user._id.toString() === userId.toString()
+      );
+
+      if (!isParticipant) {
+        const initialPosition = { x: 100, y: 100 };
+        await room.addParticipant(userId, {
+          position: initialPosition,
+          lastPosition: { ...initialPosition }
+        });
+        await room.save();
+      }
 
       // Notify room of new participant
-      const participant = room.participants.find(p => p.user._id.toString() === socket.user._id.toString());
-      io.to(roomIdentifier).emit('userJoined', {
-        userId: socket.user._id,
-        username: socket.user.username,
-        avatar: socket.user.avatar,
+      const participant = room.participants.find(
+        p => p.user._id.toString() === userId.toString()
+      );
+
+      io.to(roomId).emit('userJoined', {
+        userId: user._id,
+        username: user.username,
+        avatar: user.avatar,
         position: participant.position,
         lastPosition: participant.lastPosition
       });
 
-      // Send updated room state
-      io.to(roomIdentifier).emit('roomState', room);
+      // Broadcast updated room state
+      await broadcastRoomState(roomId);
     } catch (error) {
-      console.error('Error in joinRoom:', error.message);
+      console.error('Error joining room:', error);
       socket.emit('error', { message: error.message });
     }
   });
 
-  // Handle user movement
+  // Handle user movement with improved validation and throttling
   socket.on('userMove', async (data) => {
     try {
-      if (!socket.user || !socket.userId) {
-        console.error('No user associated with socket for movement:', socket.id);
-        return;
+      if (!userId || !currentRoomId) {
+        throw new Error('User not authenticated or not in a room');
       }
 
-      // Validate movement data
-      if (!data || typeof data !== 'object') {
-        console.error('Invalid movement data format:', socket.id);
-        return;
+      const { position } = data;
+      if (!position || typeof position.x !== 'number' || typeof position.y !== 'number') {
+        throw new Error('Invalid position data');
       }
 
-      const { roomId, position } = data;
-      
-      if (!roomId || !position || typeof position.x !== 'number' || typeof position.y !== 'number') {
-        console.error('Invalid movement data:', socket.id);
-        return;
+      // Add movement throttling (50ms between updates)
+      const now = Date.now();
+      const lastMove = lastMoveTime.get(userId) || 0;
+      if (now - lastMove < 50) {
+        return; // Skip this update if too soon
       }
+      lastMoveTime.set(userId, now);
 
-      // Find room and update participant position
-      const room = await Room.findById(roomId)
-        .populate('participants.user', 'username avatar isOnline');
-
-      if (!room) {
-        console.error('Room not found for movement:', roomId);
-        return;
-      }
-
-      // Find the participant
+      const room = await getRoomState(currentRoomId);
       const participant = room.participants.find(
-        p => p.user._id.toString() === socket.user._id.toString()
+        p => p.user._id.toString() === userId.toString()
       );
 
       if (!participant) {
-        console.error('User not in room:', {
-          userId: socket.user._id,
-          roomId: room._id
-        });
-        return;
+        throw new Error('User not in room');
       }
 
-      // Validate position is within room bounds
+      // Validate and clamp position
       const bounds = {
         minX: 20,
         maxX: 780,
@@ -329,52 +296,52 @@ io.on('connection', (socket) => {
         y: Math.max(bounds.minY, Math.min(bounds.maxY, position.y))
       };
 
-      // Only update if position actually changed
-      if (participant.position.x !== validatedPosition.x || participant.position.y !== validatedPosition.y) {
-        // Store the last position before updating
+      // Only update if position changed significantly
+      if (Math.abs(participant.position.x - validatedPosition.x) > 0.1 || 
+          Math.abs(participant.position.y - validatedPosition.y) > 0.1) {
+        
+        // Update participant position
         participant.lastPosition = { ...participant.position };
         participant.position = validatedPosition;
         participant.lastActive = new Date();
 
-        // Ensure all participants have lastPosition set
-        room.participants = room.participants.map(p => {
-          if (!p.lastPosition) {
-            p.lastPosition = { ...p.position };
-          }
-          return p;
-        });
+        // Use findOneAndUpdate instead of save to prevent parallel save issues
+        await Room.findOneAndUpdate(
+          { _id: currentRoomId, 'participants.user': userId },
+          { 
+            $set: {
+              'participants.$.position': validatedPosition,
+              'participants.$.lastPosition': participant.lastPosition,
+              'participants.$.lastActive': participant.lastActive
+            }
+          },
+          { new: true }
+        );
 
-        // Save and broadcast
-        await room.save();
-        io.to(roomId).emit('roomState', room);
+        // Broadcast updated room state
+        await broadcastRoomState(currentRoomId);
       }
     } catch (error) {
-      console.error('Error handling user movement:', error.message);
+      console.error('Error handling movement:', error);
+      socket.emit('error', { message: error.message });
     }
   });
 
-  // Handle chat messages
+  // Handle chat messages with improved validation
   socket.on('chatMessage', async (data, callback) => {
     try {
-      if (!socket.user) {
-        console.error('No user associated with socket:', socket.id);
-        return callback?.({ error: 'User not authenticated' });
+      if (!userId || !currentRoomId) {
+        throw new Error('User not authenticated or not in a room');
       }
 
-      const { roomId, message } = data;
-      if (!roomId || !message) {
-        console.error('Invalid message data:', socket.id);
-        return callback?.({ error: 'Invalid message data' });
+      const { message } = data;
+      if (!message || typeof message !== 'string' || message.trim().length === 0) {
+        throw new Error('Invalid message');
       }
 
-      const room = await Room.findById(roomId);
-      if (!room) {
-        console.error('Room not found:', roomId);
-        return callback?.({ error: 'Room not found' });
-      }
-
-      // Add message to room
-      const chatMessage = await room.addChatMessage(socket.user._id, message);
+      const room = await getRoomState(currentRoomId);
+      const chatMessage = await room.addChatMessage(userId, message.trim());
+      await room.save();
 
       // Broadcast message to room
       const messageToEmit = {
@@ -386,42 +353,100 @@ io.on('connection', (socket) => {
         }
       };
       
-      io.to(roomId).emit('newMessage', messageToEmit);
+      io.to(currentRoomId).emit('newMessage', messageToEmit);
       callback?.({ success: true, messageId: chatMessage._id });
     } catch (error) {
-      console.error('Error handling chat message:', error.message);
+      console.error('Error handling chat message:', error);
       callback?.({ error: error.message });
     }
   });
 
-  // Handle WebRTC signaling
+  // Handle WebRTC signaling with improved validation
   socket.on('signal', (data) => {
-    socket.to(data.to).emit('signal', {
-      from: socket.id,
-      username: socket.user.username,
-      signal: data.signal
-    });
+    try {
+      if (!userId) {
+        throw new Error('User not authenticated');
+      }
+
+      const { to, signal } = data;
+      if (!to || !signal) {
+        throw new Error('Invalid signal data');
+      }
+
+      socket.to(to).emit('signal', {
+        from: socket.id,
+        username: socket.user.username,
+        avatar: socket.user.avatar,
+        signal
+      });
+    } catch (error) {
+      console.error('Error handling WebRTC signal:', error);
+      socket.emit('error', { message: error.message });
+    }
   });
+
+  // Handle disconnection with cleanup
+  socket.on('disconnect', async (reason) => {
+    try {
+      if (userId) {
+        const user = await User.findById(userId);
+        if (user) {
+          user.isOnline = false;
+          user.lastSeen = new Date();
+          await user.save();
+        }
+      }
+
+      if (currentRoomId) {
+        await handleRoomLeave(currentRoomId);
+      }
+
+      // Clear room states if no active connections
+      if (io.sockets.adapter.rooms.get(currentRoomId)?.size === 0) {
+        roomStates.delete(currentRoomId);
+      }
+    } catch (error) {
+      console.error('Error handling disconnect:', error);
+    }
+  });
+
+  // Helper function to handle room leave
+  async function handleRoomLeave(roomId) {
+    try {
+      const room = await getRoomState(roomId);
+      if (room) {
+        await room.removeParticipant(userId);
+        await room.save();
+        await broadcastRoomState(roomId);
+      }
+    } catch (error) {
+      console.error('Error handling room leave:', error);
+    }
+  }
 });
 
 // Connect to MongoDB and start server
-mongoose.connect(process.env.MONGODB_URI)
-  .then(async () => {
-    console.log('Connected to MongoDB');
-    
-    // Ensure lobby room exists
-    await ensureLobbyRoom();
-    
-    // Start server
-    const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+if (process.env.NODE_ENV !== 'test') {
+  mongoose.connect(process.env.MONGODB_URI)
+    .then(async () => {
+      console.log('Connected to MongoDB');
+      
+      // Ensure lobby room exists
+      await ensureLobbyRoom();
+      
+      // Start server
+      const PORT = process.env.PORT || 5000;
+      server.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+      });
+    })
+    .catch((error) => {
+      console.error('MongoDB connection error:', error);
+      process.exit(1);
     });
-  })
-  .catch((error) => {
-    console.error('MongoDB connection error:', error);
-    process.exit(1);
-  });
+}
+
+module.exports = { app, server, io };
 
 // Basic route for testing
 app.get('/', (req, res) => {

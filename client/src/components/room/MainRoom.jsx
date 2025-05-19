@@ -59,17 +59,19 @@ export const MainRoom = () => {
           }
         });
         
+        // The response is wrapped in a data field
+        const { data } = response.data;
         console.log('Lobby room response:', {
-          success: !!response.data,
-          rooms: response.data?.rooms,
+          success: !!data,
+          rooms: data?.rooms,
           timestamp: new Date().toISOString()
         });
 
-        if (!response.data?.rooms || !Array.isArray(response.data.rooms)) {
+        if (!data?.rooms || !Array.isArray(data.rooms)) {
           throw new Error('Invalid response format from server');
         }
 
-        const lobbyRoom = response.data.rooms.find(room => room.name === 'Lobby');
+        const lobbyRoom = data.rooms.find(room => room.name === 'Lobby');
         if (!lobbyRoom) {
           throw new Error('Lobby room not found');
         }
@@ -103,6 +105,134 @@ export const MainRoom = () => {
     fetchLobbyRoom();
   }, [user]);
 
+  // Handle room state updates
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleRoomStateUpdate = (state) => {
+      if (!state || !state.participants) {
+        console.error('Invalid room state received:', {
+          roomId: state?._id,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
+      // Update room state with proper participant handling
+      setRoomState(prevState => {
+        if (!prevState) return state;
+
+        // Create a map of existing participants for quick lookup
+        const existingParticipants = new Map(
+          prevState.participants?.map(p => [p.user._id, p]) || []
+        );
+
+        // Update participants with proper position handling
+        const updatedParticipants = state.participants.map(participant => {
+          const existingParticipant = existingParticipants.get(participant.user._id);
+          const isCurrentUser = participant.user._id === user._id;
+
+          if (!existingParticipant) {
+            // New participant
+            return {
+              ...participant,
+              lastPosition: { ...participant.position }
+            };
+          }
+
+          // Update existing participant
+          return {
+            ...participant,
+            lastPosition: isCurrentUser ? 
+              existingParticipant.lastPosition : 
+              { ...existingParticipant.position }
+          };
+        });
+
+        // Return updated state
+        return {
+          ...state,
+          participants: updatedParticipants,
+          _lastUpdate: Date.now()
+        };
+      });
+    };
+
+    socket.on('roomState', handleRoomStateUpdate);
+
+    return () => {
+      socket.off('roomState', handleRoomStateUpdate);
+    };
+  }, [socket, user]);
+
+  // Handle player movement
+  const handlePlayerMove = useCallback((newPosition) => {
+    if (!socket?.connected || !user || !lobbyRoomId) {
+      console.warn('Cannot send movement update:', {
+        hasSocket: !!socket,
+        socketConnected: socket?.connected,
+        hasUser: !!user,
+        hasLobbyRoomId: !!lobbyRoomId,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Update local state immediately for smooth movement
+    setRoomState(prevState => {
+      if (!prevState) return prevState;
+
+      const updatedParticipants = prevState.participants.map(participant => {
+        if (participant.user._id === user._id) {
+          return {
+            ...participant,
+            lastPosition: { ...participant.position },
+            position: newPosition
+          };
+        }
+        return participant;
+      });
+
+      return {
+        ...prevState,
+        participants: updatedParticipants,
+        _lastUpdate: Date.now()
+      };
+    });
+
+    // Send movement update to server
+    socket.emit('userMove', { position: newPosition });
+  }, [socket, user, lobbyRoomId]);
+
+  // Handle user joined/left events
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUserJoined = (data) => {
+      console.log('User joined:', {
+        userId: data.userId,
+        username: data.username,
+        timestamp: new Date().toISOString()
+      });
+    };
+
+    const handleUserLeft = (data) => {
+      console.log('User left:', {
+        userId: data.userId,
+        username: data.username,
+        timestamp: new Date().toISOString()
+      });
+    };
+
+    socket.on('userJoined', handleUserJoined);
+    socket.on('userLeft', handleUserLeft);
+
+    return () => {
+      socket.off('userJoined', handleUserJoined);
+      socket.off('userLeft', handleUserLeft);
+    };
+  }, [socket]);
+
   // Initialize socket connection
   useEffect(() => {
     if (!user || !lobbyRoomId) {
@@ -123,18 +253,13 @@ export const MainRoom = () => {
 
     const token = localStorage.getItem('token');
     if (!token) {
-      console.error('No authentication token found for socket connection:', {
-        userId: user._id,
-        timestamp: new Date().toISOString()
-      });
+      console.error('No authentication token found for socket connection');
       setError('Authentication required. Please log in again.');
       return;
     }
 
     const newSocket = io(import.meta.env.VITE_SERVER_URL, {
-      auth: {
-        token: token
-      },
+      auth: { token },
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -150,15 +275,9 @@ export const MainRoom = () => {
         timestamp: new Date().toISOString()
       });
 
-      // Authenticate immediately after connection
       newSocket.emit('authenticate', { token }, (response) => {
         if (response?.error) {
-          console.error('Socket authentication failed:', {
-            error: response.error,
-            socketId: newSocket.id,
-            userId: user._id,
-            timestamp: new Date().toISOString()
-          });
+          console.error('Socket authentication failed:', response.error);
           setError('Authentication failed. Please log in again.');
           newSocket.disconnect();
         } else {
@@ -169,7 +288,7 @@ export const MainRoom = () => {
             timestamp: new Date().toISOString()
           });
 
-          // Join room immediately after successful authentication
+          // Join room after successful authentication
           if (lobbyRoomId) {
             console.log('Joining room after authentication:', {
               roomId: lobbyRoomId,
@@ -182,64 +301,9 @@ export const MainRoom = () => {
       });
     });
 
-    // Handle room state updates
-    newSocket.on('roomState', (state) => {
-      // Only log if there's an issue with the state
-      if (!state || !state.participants) {
-        console.error('Invalid room state received:', {
-          roomId: state?._id,
-          timestamp: new Date().toISOString()
-        });
-        return;
-      }
-
-      // Update room state immediately without logging
-      setRoomState(prevState => {
-        if (!prevState) return state;
-
-        const existingParticipants = new Map(
-          prevState.participants?.map(p => [p.user._id, p]) || []
-        );
-
-        const updatedParticipants = state.participants.map(participant => {
-          const existingParticipant = existingParticipants.get(participant.user._id);
-          const isCurrentUser = participant.user._id === user._id;
-
-          if (!existingParticipant) {
-            return {
-              ...participant,
-              lastPosition: { ...participant.position }
-            };
-          }
-
-          if (existingParticipant.position.x !== participant.position.x || 
-              existingParticipant.position.y !== participant.position.y) {
-            return {
-              ...participant,
-              lastPosition: isCurrentUser ? 
-                existingParticipant.lastPosition : 
-                { ...existingParticipant.position }
-            };
-          }
-
-          return existingParticipant;
-        });
-
-        return {
-          ...state,
-          participants: updatedParticipants,
-          _lastUpdate: Date.now()
-        };
-      });
-    });
-
     // Handle errors
     newSocket.on('error', (error) => {
-      console.error('Socket error:', {
-        error: error.message,
-        socketId: newSocket.id,
-        timestamp: new Date().toISOString()
-      });
+      console.error('Socket error:', error);
       setError(error.message);
     });
 
@@ -269,157 +333,115 @@ export const MainRoom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Handle player movement
-  const handlePlayerMove = useCallback((newPosition) => {
-    if (!socket?.connected || !user || !lobbyRoomId) {
-      console.warn('Cannot send movement update - missing requirements');
-      return;
-    }
-
-    // Update local state immediately without logging
-    setRoomState(prevState => {
-      if (!prevState) return prevState;
-
-      const updatedParticipants = prevState.participants.map(participant => {
-        if (participant.user._id === user._id) {
-          const lastPosition = { ...participant.position };
-          return {
-            ...participant,
-            position: newPosition,
-            lastPosition
-          };
-        }
-        return participant;
-      });
-
-      return {
-        ...prevState,
-        participants: updatedParticipants,
-        _lastUpdate: Date.now()
-      };
-    });
-
-    // Send movement update to server without logging
-    socket.emit('userMove', {
-      roomId: lobbyRoomId,
-      position: newPosition
-    });
-  }, [socket, user, lobbyRoomId]);
-
-  // Handle user joined events - remove logging
+  // Handle chat messages
   useEffect(() => {
-    if (socket) {
-      const handleUserJoined = () => {
-        // Room state will be updated via roomState event
-      };
+    if (!socket) return;
 
-      const handleUserLeft = () => {
-        // Room state will be updated via roomState event
-      };
-
-      socket.on('userJoined', handleUserJoined);
-      socket.on('userLeft', handleUserLeft);
-
-      return () => {
-        socket.off('userJoined', handleUserJoined);
-        socket.off('userLeft', handleUserLeft);
-      };
-    }
-  }, [socket]);
-
-  // Remove debug log for room state changes
-  useEffect(() => {
-    // Only log when room state is missing or has errors
-    if (!roomState || !roomState.participants) {
-      console.log('Room state issue:', {
-        hasRoomState: !!roomState,
-        hasParticipants: !!roomState?.participants,
+    const handleNewMessage = (message) => {
+      console.log('Received new message:', {
+        messageId: message._id,
+        sender: message.user?.username,
         timestamp: new Date().toISOString()
       });
-    }
-  }, [roomState]);
 
-  // Handle user movement updates - remove logging
-  useEffect(() => {
-    if (!socket) return;
+      // Add message to state with proper formatting
+      setMessages(prev => [...prev, {
+        ...message,
+        createdAt: new Date(message.createdAt),
+        type: message.type || 'chat'
+      }]);
 
-    const handleUserMoved = (data) => {
-      setRoomState(prev => {
-        if (!prev) return prev;
-
-        const updatedParticipants = prev.participants.map(p => {
-          if (p.user._id === data.userId) {
-            return {
-              ...p,
-              position: data.position
-            };
-          }
-          return p;
-        });
-
-        return {
-          ...prev,
-          participants: updatedParticipants
-        };
-      });
+      // Scroll to bottom after a short delay to ensure smooth scrolling
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
     };
 
-    socket.on('userMoved', handleUserMoved);
+    const handleSystemMessage = (message) => {
+      console.log('Received system message:', {
+        message: message.text,
+        timestamp: new Date().toISOString()
+      });
+
+      setMessages(prev => [...prev, {
+        type: 'system',
+        message: message.text,
+        createdAt: new Date()
+      }]);
+
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    };
+
+    socket.on('newMessage', handleNewMessage);
+    socket.on('systemMessage', handleSystemMessage);
 
     return () => {
-      socket.off('userMoved', handleUserMoved);
+      socket.off('newMessage', handleNewMessage);
+      socket.off('systemMessage', handleSystemMessage);
     };
   }, [socket]);
 
-  // Add socket event listener for room state updates - remove logging
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleRoomStateUpdate = (room) => {
-      if (room?.participants?.[0]) {
-        handlePlayerMove(room.participants[0].position);
-      }
-    };
-
-    socket.on('roomState', handleRoomStateUpdate);
-
-    return () => {
-      socket.off('roomState', handleRoomStateUpdate);
-    };
-  }, [socket, handlePlayerMove]);
-
-  // Handle chat messages - keep minimal logging for errors only
-  const handleSendMessage = (e) => {
+  // Handle sending messages
+  const handleSendMessage = async (e) => {
     e.preventDefault();
 
     if (!newMessage.trim() || !socket?.connected || !roomState?._id) {
+      console.warn('Cannot send message:', {
+        hasMessage: !!newMessage.trim(),
+        socketConnected: socket?.connected,
+        hasRoomId: !!roomState?._id,
+        timestamp: new Date().toISOString()
+      });
       return;
     }
 
-    const messageData = {
-      roomId: roomState._id,
-      message: newMessage.trim()
-    };
+    const messageText = newMessage.trim();
+    setNewMessage(''); // Clear input immediately for better UX
 
-    socket.emit('chatMessage', messageData, (response) => {
-      if (response?.error) {
-        console.error('Chat error:', response.error);
-        setError('Failed to send message: ' + response.error);
-      } else {
-        const localMessage = {
-          type: 'chat',
-          user: {
-            _id: user._id,
-            username: user.username
-          },
-          message: newMessage.trim(),
-          createdAt: new Date().toISOString()
-        };
-        
-        setMessages(prev => [...prev, localMessage]);
-        setNewMessage('');
-      }
-    });
+    try {
+      // Optimistically add message to UI
+      const tempMessage = {
+        _id: Date.now().toString(), // Temporary ID
+        message: messageText,
+        user: {
+          _id: user._id,
+          username: user.username,
+          avatar: user.avatar
+        },
+        createdAt: new Date(),
+        type: 'chat',
+        isPending: true // Mark as pending until server confirms
+      };
+
+      setMessages(prev => [...prev, tempMessage]);
+
+      // Send to server
+      socket.emit('chatMessage', { message: messageText }, (response) => {
+        if (response?.error) {
+          console.error('Chat error:', response.error);
+          setError('Failed to send message: ' + response.error);
+          
+          // Remove failed message
+          setMessages(prev => prev.filter(m => m._id !== tempMessage._id));
+          
+          // Restore message text
+          setNewMessage(messageText);
+        } else {
+          // Update message with server response
+          setMessages(prev => prev.map(m => 
+            m._id === tempMessage._id 
+              ? { ...m, _id: response.messageId, isPending: false }
+              : m
+          ));
+        }
+      });
+    } catch (err) {
+      console.error('Error sending message:', err);
+      setError('Failed to send message. Please try again.');
+      setNewMessage(messageText); // Restore message text
+    }
   };
 
   const handleLogout = () => {
@@ -545,8 +567,10 @@ export const MainRoom = () => {
             <div className="space-y-4">
               {messages.map((message, index) => (
                 <div
-                  key={index}
-                  className={`p-2 rounded ${
+                  key={message._id || index}
+                  className={`p-2 rounded transition-opacity duration-200 ${
+                    message.isPending ? 'opacity-50' : 'opacity-100'
+                  } ${
                     message.type === 'system'
                       ? 'bg-gray-100 text-gray-600 text-sm'
                       : message.user?._id === user?._id
@@ -565,8 +589,11 @@ export const MainRoom = () => {
                         <span className="text-xs text-gray-500">
                           {new Date(message.createdAt).toLocaleTimeString()}
                         </span>
+                        {message.isPending && (
+                          <span className="text-xs text-gray-400">(sending...)</span>
+                        )}
                       </div>
-                      <p className="mt-1 text-gray-800">{message.message}</p>
+                      <p className="mt-1 text-gray-800 break-words">{message.message}</p>
                     </>
                   )}
                 </div>
@@ -585,10 +612,11 @@ export const MainRoom = () => {
                 placeholder="Type a message..."
                 className="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 disabled={!socket?.connected}
+                maxLength={500} // Prevent extremely long messages
               />
               <button
                 type="submit"
-                className={`px-4 py-2 rounded ${
+                className={`px-4 py-2 rounded transition-colors duration-200 ${
                   socket?.connected && newMessage.trim()
                     ? 'bg-blue-500 text-white hover:bg-blue-600'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'

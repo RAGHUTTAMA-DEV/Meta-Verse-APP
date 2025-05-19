@@ -1,50 +1,56 @@
+const User = require('../models/UserModel');
 const jwt = require('jsonwebtoken');
-const User=require('../models/UserModel');
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d'
-  });
+const bcrypt = require('bcryptjs');
+
+// Helper function for consistent API responses
+const apiResponse = (res, status, data = null, error = null) => {
+  const response = { status: status < 400 ? 'success' : 'error' };
+  if (data) response.data = data;
+  if (error) response.error = error;
+  return res.status(status).json(response);
 };
 
-// Register new user
+// Register a new user
 const register = async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
     // Check if user already exists
-    const existingUser = await User.findOne({ 
-      $or: [{ email }, { username }] 
-    });
-
+    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
     if (existingUser) {
-      return res.status(400).json({ 
-        error: 'User with this email or username already exists' 
-      });
+      return apiResponse(res, 400, null, 'User already exists');
     }
 
     // Create new user
     const user = new User({
       username,
       email,
-      password
+      password,
+      currentRoom: 'lobby'
     });
 
     await user.save();
 
-    // Generate token
-    const token = generateToken(user._id);
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
-    // Send response without password
-    const userResponse = user.toObject();
-    delete userResponse.password;
-
-    res.status(201).json({
-      user: userResponse,
+    return apiResponse(res, 201, {
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar,
+        isOnline: user.isOnline,
+        currentRoom: user.currentRoom
+      },
       token
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -52,91 +58,135 @@ const register = async (req, res) => {
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log('Login attempt:', { email, hasPassword: !!password });
 
-    // Find user and include password for comparison
+    if (!email || !password) {
+      return apiResponse(res, 400, null, 'Email and password are required');
+    }
+
+    // Find user by email and explicitly select password
     const user = await User.findOne({ email }).select('+password');
-    console.log('User lookup result:', { 
-      found: !!user, 
-      userId: user?._id,
-      username: user?.username,
-      hasPassword: !!user?.password 
-    });
-
     if (!user) {
-      console.log('Login failed: User not found');
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return apiResponse(res, 401, null, 'Invalid credentials');
     }
 
-    // Check password
+    // Use the model's comparePassword method
     const isMatch = await user.comparePassword(password);
-    console.log('Password comparison result:', { isMatch });
-
     if (!isMatch) {
-      console.log('Login failed: Invalid password');
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return apiResponse(res, 401, null, 'Invalid credentials');
     }
-
-    // Generate token
-    const token = generateToken(user._id);
-    console.log('Token generated for user:', { userId: user._id, username: user.username });
 
     // Update user status
     user.isOnline = true;
     user.lastSeen = new Date();
     await user.save();
-    console.log('User status updated:', { 
-      userId: user._id, 
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET || 'your-secret-key', // Fallback for development
+      { expiresIn: '7d' }
+    );
+
+    // Remove password from response
+    const userResponse = {
+      _id: user._id,
       username: user.username,
+      email: user.email,
+      avatar: user.avatar,
       isOnline: user.isOnline,
-      lastSeen: user.lastSeen 
-    });
+      currentRoom: user.currentRoom
+    };
 
-    // Send response without password
-    const userResponse = user.toObject();
-    delete userResponse.password;
-
-    console.log('Login successful:', { 
-      userId: user._id, 
-      username: user.username 
-    });
-
-    res.json({
+    return apiResponse(res, 200, {
       user: userResponse,
       token
     });
   } catch (error) {
-    console.error('Login error:', {
-      message: error.message,
-      stack: error.stack,
-      email: req.body.email
-    });
-    res.status(500).json({ error: error.message });
+    console.error('Login error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
   }
 };
 
 // Logout user
 const logout = async (req, res) => {
   try {
-    // Update user status
-    req.user.isOnline = false;
-    req.user.lastSeen = new Date();
-    await req.user.save();
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return apiResponse(res, 404, null, 'User not found');
+    }
 
-    res.json({ message: 'Logged out successfully' });
+    user.isOnline = false;
+    user.currentRoom = 'lobby';
+    await user.save();
+
+    return apiResponse(res, 200, { message: 'Logged out successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return apiResponse(res, 500, null, error.message);
   }
 };
 
 // Get current user
 const getCurrentUser = async (req, res) => {
   try {
-    const user = req.user.toObject();
-    delete user.password;
-    res.json({ user });
+    const user = await User.findById(req.user._id)
+      .select('-password')
+      .populate('currentRoom', 'name');
+
+    if (!user) {
+      return apiResponse(res, 404, null, 'User not found');
+    }
+
+    return apiResponse(res, 200, { user });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return apiResponse(res, 500, null, error.message);
+  }
+};
+
+// Update user profile
+const updateProfile = async (req, res) => {
+  try {
+    const { username, email, avatar } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return apiResponse(res, 404, null, 'User not found');
+    }
+
+    // Check if username or email is already taken
+    if (username && username !== user.username) {
+      const existingUser = await User.findOne({ username });
+      if (existingUser) {
+        return apiResponse(res, 400, null, 'Username already taken');
+      }
+      user.username = username;
+    }
+
+    if (email && email !== user.email) {
+      const existingUser = await User.findOne({ email });
+      if (existingUser) {
+        return apiResponse(res, 400, null, 'Email already taken');
+      }
+      user.email = email;
+    }
+
+    if (avatar) {
+      user.avatar = avatar;
+    }
+
+    await user.save();
+
+    return apiResponse(res, 200, {
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar,
+        isOnline: user.isOnline,
+        currentRoom: user.currentRoom
+      }
+    });
+  } catch (error) {
+    return apiResponse(res, 400, null, error.message);
   }
 };
 
@@ -144,5 +194,6 @@ module.exports = {
   register,
   login,
   logout,
-  getCurrentUser
+  getCurrentUser,
+  updateProfile
 }; 

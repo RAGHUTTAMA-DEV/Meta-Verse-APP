@@ -42,6 +42,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
     // Check if user is already logged in
@@ -52,14 +53,25 @@ export const AuthProvider = ({ children }) => {
       timestamp: new Date().toISOString()
     });
 
-    if (token) {
-      checkAuthStatus();
-    } else {
-      console.log('No token found, setting loading to false:', {
-        timestamp: new Date().toISOString()
-      });
-      setLoading(false);
-    }
+    const initializeAuth = async () => {
+      try {
+        if (token) {
+          await checkAuthStatus();
+        }
+      } catch (err) {
+        console.error('Auth initialization failed:', {
+          error: err.message,
+          timestamp: new Date().toISOString()
+        });
+        localStorage.removeItem('token');
+        setUser(null);
+      } finally {
+        setInitialized(true);
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
   }, []);
 
   const checkAuthStatus = async () => {
@@ -76,19 +88,29 @@ export const AuthProvider = ({ children }) => {
           timestamp: new Date().toISOString()
         });
         setUser(null);
-        setLoading(false);
         return;
       }
 
       const response = await api.get('/api/auth/me');
       
+      // The response is wrapped in a data field
+      const { data } = response.data;
+      if (!data || !data.user) {
+        console.error('Invalid auth check response:', {
+          response: response.data,
+          timestamp: new Date().toISOString()
+        });
+        throw new Error('Invalid server response');
+      }
+      
       console.log('Auth check response:', {
-        success: !!response.data,
-        userData: response.data,
+        success: !!data,
+        userData: data.user,
         timestamp: new Date().toISOString()
       });
       
-      setUser(response.data.user);
+      setUser(data.user);
+      return data.user;
     } catch (err) {
       console.error('Auth check failed:', {
         error: err.message,
@@ -98,18 +120,14 @@ export const AuthProvider = ({ children }) => {
       });
       localStorage.removeItem('token');
       setUser(null);
-    } finally {
-      console.log('Auth check complete, setting loading to false:', {
-        hasUser: !!user,
-        timestamp: new Date().toISOString()
-      });
-      setLoading(false);
+      throw err;
     }
   };
 
   const login = async (email, password) => {
     try {
       setError(null);
+      setLoading(true);
       console.log('Attempting login:', {
         email,
         hasPassword: !!password,
@@ -121,7 +139,17 @@ export const AuthProvider = ({ children }) => {
         password
       });
       
-      const { token, user } = response.data;
+      // The response is wrapped in a data field
+      const { data } = response.data;
+      if (!data || !data.token || !data.user) {
+        console.error('Invalid login response:', {
+          response: response.data,
+          timestamp: new Date().toISOString()
+        });
+        throw new Error('Invalid server response');
+      }
+
+      const { token, user } = data;
       console.log('Login successful:', {
         hasToken: !!token,
         tokenLength: token?.length,
@@ -131,7 +159,7 @@ export const AuthProvider = ({ children }) => {
 
       localStorage.setItem('token', token);
       setUser(user);
-      return { success: true };
+      return { success: true, user };
     } catch (err) {
       console.error('Login failed:', {
         error: err.message,
@@ -139,8 +167,10 @@ export const AuthProvider = ({ children }) => {
         status: err.response?.status,
         timestamp: new Date().toISOString()
       });
-      setError(err.response?.data?.message || 'Login failed');
-      return { success: false, error: err.response?.data?.message || 'Login failed' };
+      setError(err.response?.data?.error || err.message || 'Login failed');
+      return { success: false, error: err.response?.data?.error || err.message || 'Login failed' };
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -160,7 +190,17 @@ export const AuthProvider = ({ children }) => {
         password
       });
       
-      const { token, user } = response.data;
+      // The response is wrapped in a data field
+      const { data } = response.data;
+      if (!data || !data.token || !data.user) {
+        console.error('Invalid registration response:', {
+          response: response.data,
+          timestamp: new Date().toISOString()
+        });
+        throw new Error('Invalid server response');
+      }
+
+      const { token, user } = data;
       console.log('Registration successful:', {
         hasToken: !!token,
         tokenLength: token?.length,
@@ -178,8 +218,8 @@ export const AuthProvider = ({ children }) => {
         status: err.response?.status,
         timestamp: new Date().toISOString()
       });
-      setError(err.response?.data?.message || 'Registration failed');
-      return { success: false, error: err.response?.data?.message || 'Registration failed' };
+      setError(err.response?.data?.error || err.message || 'Registration failed');
+      return { success: false, error: err.response?.data?.error || err.message || 'Registration failed' };
     }
   };
 
@@ -215,7 +255,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={value}>
-      {!loading && children}
+      {initialized && !loading && children}
     </AuthContext.Provider>
   );
 };

@@ -4,20 +4,48 @@ const User = require('../models/UserModel.js');
 const auth = async (req, res, next) => {
   try {
     // Get token from header
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    
+    const authHeader = req.header('Authorization');
+    if (!authHeader) {
+      return res.status(401).json({
+        status: 'error',
+        error: 'No authorization header'
+      });
+    }
+
+    const token = authHeader.replace('Bearer ', '');
     if (!token) {
-      throw new Error();
+      return res.status(401).json({
+        status: 'error',
+        error: 'No token provided'
+      });
     }
 
     // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    } catch (error) {
+      return res.status(401).json({
+        status: 'error',
+        error: 'Invalid token'
+      });
+    }
     
     // Find user
-    const user = await User.findOne({ _id: decoded.userId });
-    
+    const user = await User.findById(decoded.userId).select('-password');
     if (!user) {
-      throw new Error();
+      return res.status(401).json({
+        status: 'error',
+        error: 'User not found'
+      });
+    }
+
+    // Check if user is online
+    if (!user.isOnline) {
+      return res.status(401).json({
+        status: 'error',
+        error: 'User is offline'
+      });
     }
 
     // Add user to request object
@@ -26,7 +54,11 @@ const auth = async (req, res, next) => {
     
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Please authenticate' });
+    console.error('Auth middleware error:', error);
+    res.status(500).json({
+      status: 'error',
+      error: 'Internal server error'
+    });
   }
 };
 

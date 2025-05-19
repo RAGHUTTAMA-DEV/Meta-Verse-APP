@@ -1,27 +1,67 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-export const Login = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const { login, error } = useAuth();
+const Login = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { login, user, loading, error: authError } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Get the redirect path from location state or default to '/'
   const from = location.state?.from?.pathname || '/';
+
+  // Handle navigation after successful login
+  useEffect(() => {
+    if (user && !loading && !isSubmitting) {
+      console.log('Login successful, navigating to:', {
+        from,
+        user,
+        timestamp: new Date().toISOString()
+      });
+      navigate(from, { replace: true });
+    }
+  }, [user, loading, isSubmitting, navigate, from]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsLoading(true);
-    
-    const result = await login(email, password);
-    if (result.success) {
-      navigate(from, { replace: true });
+    setError('');
+    setIsSubmitting(true);
+
+    try {
+      console.log('Submitting login form:', {
+        email,
+        hasPassword: !!password,
+        timestamp: new Date().toISOString()
+      });
+
+      const { success, error: loginError, user: loginUser } = await login(email, password);
+      
+      if (!success) {
+        console.error('Login failed:', {
+          error: loginError,
+          timestamp: new Date().toISOString()
+        });
+        setError(loginError || 'Login failed');
+        return;
+      }
+
+      console.log('Login form submission successful:', {
+        user: loginUser,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error('Login form submission error:', {
+        error: err.message,
+        timestamp: new Date().toISOString()
+      });
+      setError(err.message || 'An error occurred during login');
+    } finally {
+      setIsSubmitting(false);
     }
-    
-    setIsLoading(false);
   };
 
   return (
@@ -82,10 +122,10 @@ export const Login = () => {
           <div>
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isSubmitting}
               className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
             >
-              {isLoading ? (
+              {isSubmitting ? (
                 <span className="absolute left-0 inset-y-0 flex items-center pl-3">
                   <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -101,4 +141,6 @@ export const Login = () => {
       </div>
     </div>
   );
-}; 
+};
+
+export default Login; 
