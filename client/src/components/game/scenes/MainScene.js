@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import PlayerSprite from '../phaser/PlayerSprite';
 import RoomObjects from '../phaser/RoomObjects';
 import NetworkManager from '../phaser/NetworkManager';
+import ModernMapSystem from '../phaser/ModernMapSystem';
 
 export default class MainScene extends Phaser.Scene {
   constructor() {
@@ -20,83 +21,159 @@ export default class MainScene extends Phaser.Scene {
     this.playerSpeed = 180; // pixels per second
     this.isConnected = false;
     this.isReady = false;
+    this.mapSystem = null;
+    this.debugText = null;
   }
 
-  init(data) {
-    // Initialize with data from PhaserGame
-    this.updateSceneData(data);
+  validateSceneData(data) {
+    const validation = {
+      roomState: {
+        exists: !!data.roomState,
+        hasId: !!data.roomState?._id,
+        hasParticipants: Array.isArray(data.roomState?.participants),
+        hasObjects: Array.isArray(data.roomState?.objects),
+        data: data.roomState
+      },
+      socket: {
+        exists: !!data.socket,
+        connected: data.socket?.connected,
+        hasId: !!data.socket?.id,
+        data: data.socket
+      },
+      user: {
+        exists: !!data.user,
+        hasId: !!data.user?._id,
+        hasUsername: !!data.user?.username,
+        data: data.user
+      }
+    };
+
+    console.log('Scene data validation:', validation);
+
+    const isValid = 
+      validation.roomState.exists && 
+      validation.roomState.hasId && 
+      validation.roomState.hasParticipants &&
+      validation.socket.exists && 
+      validation.socket.connected && 
+      validation.socket.hasId &&
+      validation.user.exists && 
+      validation.user.hasId && 
+      validation.user.hasUsername;
+
+    if (!isValid) {
+      console.error('Scene: Invalid data received:', {
+        missingRoomState: !validation.roomState.exists,
+        missingRoomId: !validation.roomState.hasId,
+        missingParticipants: !validation.roomState.hasParticipants,
+        missingSocket: !validation.socket.exists,
+        socketNotConnected: !validation.socket.connected,
+        missingSocketId: !validation.socket.hasId,
+        missingUser: !validation.user.exists,
+        missingUserId: !validation.user.hasId,
+        missingUsername: !validation.user.hasUsername
+      });
+    }
+
+    return isValid;
   }
 
   updateSceneData(data) {
-    // Validate input data
-    if (!data) {
-      console.warn('MainScene: updateSceneData called with no data');
-      return;
-    }
-
     console.log('Updating scene data:', {
       hasRoomState: !!data.roomState,
       hasSocket: !!data.socket,
       hasUser: !!data.user,
-      socketConnected: data.socket?.connected,
-      roomName: data.roomState?.name,
+      roomState: data.roomState ? {
+        id: data.roomState._id,
+        name: data.roomState.name,
+        participants: data.roomState.participants?.length || 0,
+        hasObjects: !!data.roomState.objects
+      } : null,
+      user: data.user ? {
+        id: data.user._id,
+        username: data.user.username
+      } : null,
+      socket: data.socket ? {
+        id: data.socket.id,
+        connected: data.socket.connected
+      } : null,
       isReady: this.isReady,
-      sceneState: this.scene?.isActive?.() ? 'active' : 'inactive'
+      timestamp: new Date().toISOString()
     });
 
-    // Update scene data
+    // Validate data before updating
+    if (!this.validateSceneData(data)) {
+      console.error('Scene: Cannot update - invalid data');
+      return;
+    }
+
     let shouldRefresh = false;
 
-    if (data.roomState) {
-      this.roomState = data.roomState;
+    // Update socket if changed
+    if (data.socket && (!this.socket || this.socket.id !== data.socket.id)) {
+      console.log('Socket updated:', {
+        oldId: this.socket?.id,
+        newId: data.socket.id,
+        connected: data.socket.connected
+      });
+      this.socket = data.socket;
+      this.isConnected = data.socket.connected;
       shouldRefresh = true;
     }
 
-    if (data.socket) {
-      // Only update socket if it's different
-      if (this.socket !== data.socket) {
-        // Clean up old network manager if it exists
-        if (this.network) {
-          this.network.destroy();
-          this.network = null;
-        }
-        this.socket = data.socket;
-        this.isConnected = data.socket.connected;
-        // Create new network manager
-        if (this.user) { // Only create network manager if we have user data
-          try {
-            this.network = new NetworkManager(this, this.socket, this.user);
-          } catch (error) {
-            console.error('MainScene: Failed to create NetworkManager:', error);
-          }
-        }
-      }
+    // Update user if changed
+    if (data.user && (!this.user || this.user._id !== data.user._id)) {
+      console.log('User updated:', {
+        oldId: this.user?._id,
+        newId: data.user._id,
+        username: data.user.username
+      });
+      this.user = data.user;
+      shouldRefresh = true;
     }
 
-    if (data.user) {
-      const oldUserId = this.user?._id;
-      this.user = data.user;
-      // Create network manager if we have socket but no network manager
-      if (this.socket && !this.network && this.user) {
-        try {
-          this.network = new NetworkManager(this, this.socket, this.user);
-        } catch (error) {
-          console.error('MainScene: Failed to create NetworkManager:', error);
-        }
-      }
-      // Refresh if user changed
-      if (oldUserId !== this.user._id) {
-        shouldRefresh = true;
-      }
+    // Update room state if changed
+    if (data.roomState && (!this.roomState || this.roomState._id !== data.roomState._id)) {
+      console.log('Room state updated:', {
+        oldId: this.roomState?._id,
+        newId: data.roomState._id,
+        name: data.roomState.name,
+        participants: data.roomState.participants?.length || 0,
+        hasObjects: !!data.roomState.objects
+      });
+
+      // Ensure room state has required properties
+      this.roomState = {
+        ...data.roomState,
+        participants: data.roomState.participants || [],
+        objects: data.roomState.objects || []
+      };
+      shouldRefresh = true;
     }
 
     // If we have all required data and the scene is ready, refresh
     if (shouldRefresh && this.roomState && this.socket && this.user && this.isReady) {
-      // Use next frame to ensure scene is ready
-      this.time.delayedCall(0, () => {
-        if (this.isReady) {
-          this.refreshScene();
-        }
+      console.log('All required data present, refreshing scene:', {
+        hasRoomState: !!this.roomState,
+        hasSocket: !!this.socket,
+        hasUser: !!this.user,
+        isReady: this.isReady,
+        isConnected: this.isConnected,
+        roomId: this.roomState._id,
+        userId: this.user._id,
+        socketId: this.socket.id
+      });
+      this.refreshScene();
+    } else {
+      console.log('Cannot refresh scene - missing required data:', {
+        hasRoomState: !!this.roomState,
+        hasSocket: !!this.socket,
+        hasUser: !!this.user,
+        isReady: this.isReady,
+        isConnected: this.isConnected,
+        roomId: this.roomState?._id,
+        userId: this.user?._id,
+        socketId: this.socket?.id
       });
     }
   }
@@ -113,53 +190,145 @@ export default class MainScene extends Phaser.Scene {
   }
 
   createPlayer() {
+    console.log('Creating player:', {
+      userId: this.user?._id,
+      username: this.user?.username,
+      hasRoomState: !!this.roomState,
+      roomId: this.roomState?._id,
+      spawnPoint: this.roomState?.objects?.spawnPoint,
+      timestamp: new Date().toISOString()
+    });
+
+    if (!this.user) {
+      console.error('Cannot create player - no user data');
+      return;
+    }
+
     // Create player at initial position or center of screen
     const startX = this.roomState?.objects?.spawnPoint?.x || 400;
     const startY = this.roomState?.objects?.spawnPoint?.y || 300;
 
     try {
+      // Create the player sprite
       this.player = new PlayerSprite(this, startX, startY, this.user);
+      console.log('Player sprite created:', {
+        position: { x: startX, y: startY },
+        sprite: !!this.player.sprite,
+        label: !!this.player.label
+      });
+      
+      // Add physics body to player sprite
+      this.physics.add.existing(this.player.sprite);
+      this.player.sprite.body.setCircle(this.player.radius);
+      console.log('Physics body added to player');
+      
+      // Set up camera to follow player
+      this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
+      this.cameras.main.setZoom(1);
+      console.log('Camera set to follow player');
+
+      // Verify player creation
+      console.log('Player creation complete:', {
+        position: { x: this.player.sprite.x, y: this.player.sprite.y },
+        hasPhysics: !!this.player.sprite.body,
+        hasLabel: !!this.player.label,
+        isVisible: this.player.sprite.visible
+      });
     } catch (error) {
-      console.error('MainScene: Failed to create player:', error);
+      console.error('Failed to create player:', error);
+      // Try to clean up any partially created player
+      if (this.player) {
+        try {
+          if (this.player.sprite) this.player.sprite.destroy();
+          if (this.player.label) this.player.label.destroy();
+        } catch (cleanupError) {
+          console.error('Error cleaning up failed player:', cleanupError);
+        }
+        this.player = null;
+      }
     }
   }
 
   refreshScene() {
-    console.log('Refreshing scene', {
+    console.log('Refreshing scene:', {
+      hasPlayer: !!this.player,
       hasRoomState: !!this.roomState,
+      hasSocket: !!this.socket,
       hasUser: !!this.user,
       isReady: this.isReady,
+      isConnected: this.isConnected,
+      roomId: this.roomState?._id,
+      userId: this.user?._id,
+      socketId: this.socket?.id,
       timestamp: new Date().toISOString()
     });
 
-    // Clear existing objects
+    // Clear existing scene
     this.clearScene();
-    
-    // Recreate everything if we have required data
+
+    // Create new scene elements
     if (this.roomState && this.user) {
-      try {
-        // Create environment first
-        this.createEnvironment();
-        
-        // Then create player
-        this.createPlayer();
-        
-        // Finally set up socket handlers
-        this.setupSocketHandlers();
-        
-        console.log('Scene refreshed successfully', {
-          hasPlayer: !!this.player,
-          hasRoomObjects: !!this.roomObjects,
+      console.log('Creating new scene elements');
+      
+      // Create player first
+      this.createPlayer();
+      
+      // Create room objects
+      if (this.roomState.objects) {
+        console.log('Creating room objects:', {
+          count: this.roomState.objects.length
+        });
+        this.roomObjects = new RoomObjects(this);
+        this.roomState.objects.forEach(obj => this.roomObjects.createObject(obj));
+      }
+
+      // Create other players
+      if (this.roomState.participants) {
+        console.log('Creating other players:', {
+          count: this.roomState.participants.length,
+          currentUserId: this.user._id
+        });
+        this.roomState.participants.forEach(participant => {
+          if (participant.user._id !== this.user._id) {
+            const remotePlayer = new PlayerSprite(
+              this,
+              participant.position?.x || 400,
+              participant.position?.y || 300,
+              participant.user
+            );
+            this.remotePlayers.set(participant.user._id, remotePlayer);
+          }
+        });
+      }
+
+      // Set up network manager
+      if (this.socket && this.user) {
+        console.log('Setting up network manager with data:', {
+          userId: this.user._id,
+          socketId: this.socket.id,
           timestamp: new Date().toISOString()
         });
-      } catch (error) {
-        console.error('MainScene: Error refreshing scene:', error);
+        this.network = new NetworkManager(this, this.socket, this.user);
+      } else {
+        console.warn('Cannot set up network manager - missing required data:', {
+          hasSocket: !!this.socket,
+          hasUser: !!this.user,
+          socketId: this.socket?.id,
+          userId: this.user?._id,
+          timestamp: new Date().toISOString()
+        });
       }
+
+      console.log('Scene refresh complete:', {
+        hasPlayer: !!this.player,
+        remotePlayerCount: this.remotePlayers.size,
+        hasRoomObjects: !!this.roomObjects,
+        hasNetwork: !!this.network
+      });
     } else {
-      console.warn('MainScene: Cannot refresh scene - missing required data', {
+      console.warn('Cannot create scene elements - missing required data:', {
         hasRoomState: !!this.roomState,
-        hasUser: !!this.user,
-        timestamp: new Date().toISOString()
+        hasUser: !!this.user
       });
     }
   }
@@ -210,17 +379,25 @@ export default class MainScene extends Phaser.Scene {
   }
 
   create() {
-    // Draw a light gray background
-    this.add.rectangle(0, 0, 800, 600, 0xf7fafc).setOrigin(0, 0);
+    console.log('Creating scene:', {
+      hasRoomState: !!this.roomState,
+      hasSocket: !!this.socket,
+      hasUser: !!this.user,
+      timestamp: new Date().toISOString()
+    });
+
+    // Create modern background
+    this.add.rectangle(0, 0, 800, 600, this.mapSystem?.mapConfig.colors.background || 0xf8fafc)
+      .setOrigin(0, 0);
     
-    // Draw grid
+    // Draw modern grid
     const grid = this.add.graphics();
-    grid.lineStyle(1, 0xcccccc, 0.5);
-    for (let x = 0; x <= 800; x += 20) {
+    grid.lineStyle(1, this.mapSystem?.mapConfig.colors.grid || 0xe2e8f0, 0.5);
+    for (let x = 0; x <= 800; x += 40) {
       grid.moveTo(x, 0);
       grid.lineTo(x, 600);
     }
-    for (let y = 0; y <= 600; y += 20) {
+    for (let y = 0; y <= 600; y += 40) {
       grid.moveTo(0, y);
       grid.lineTo(800, y);
     }
@@ -245,12 +422,41 @@ export default class MainScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D
     });
 
+    // Initialize modern map system
+    this.mapSystem = new ModernMapSystem(this);
+    this.mapSystem.initialize();
+
+    // Add current room to map if we have room state
+    if (this.roomState) {
+      this.mapSystem.addRoom({
+        id: this.roomState._id,
+        name: this.roomState.name,
+        position: this.roomState.position || { x: 0, y: 0 },
+        type: this.roomState.type || 'public',
+        template: this.roomState.template || 'office'
+      });
+      this.mapSystem.setCurrentRoom(this.roomState._id);
+    }
+
     // Mark scene as ready after a short delay to ensure everything is initialized
     this.time.delayedCall(100, () => {
+      console.log('Scene ready, checking data:', {
+        hasRoomState: !!this.roomState,
+        hasSocket: !!this.socket,
+        hasUser: !!this.user,
+        timestamp: new Date().toISOString()
+      });
+
       this.isReady = true;
       // Create initial scene state if we have all required data
       if (this.roomState && this.socket && this.user) {
         this.refreshScene();
+      } else {
+        console.error('Scene ready but missing required data:', {
+          hasRoomState: !!this.roomState,
+          hasSocket: !!this.socket,
+          hasUser: !!this.user
+        });
       }
     });
 
@@ -414,6 +620,11 @@ export default class MainScene extends Phaser.Scene {
 
     // Update debug text
     this.updateDebugText();
+
+    // Update map system
+    if (this.mapSystem) {
+      this.mapSystem.update();
+    }
   }
 
   updateDebugText() {

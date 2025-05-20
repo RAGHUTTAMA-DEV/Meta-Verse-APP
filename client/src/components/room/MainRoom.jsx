@@ -1,169 +1,296 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useAuth, axios } from '../../context/AuthContext';
-import { io } from 'socket.io-client';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import { useSocket } from '../../contexts/SocketContext';
 import PhaserGame from '../game/PhaserGame';
+import { roomAPI } from '../../utils/api';
 
 export const MainRoom = () => {
+  const { roomId } = useParams();
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { socket: globalSocket, isConnected: isGlobalSocketConnected } = useSocket();
   const [socket, setSocket] = useState(null);
   const [roomState, setRoomState] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [isDataReady, setIsDataReady] = useState(false);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [error, setError] = useState(null);
   const [lobbyRoomId, setLobbyRoomId] = useState(null);
   const messagesEndRef = useRef(null);
   const gameContainerRef = useRef(null);
+  const [joinAttempts, setJoinAttempts] = useState(0);
+  const MAX_JOIN_ATTEMPTS = 3;
+  const JOIN_RETRY_DELAY = 2000; // 2 seconds
 
-  // Remove debug log for user and socket state
+  // Add socket connection status logging
   useEffect(() => {
-    // Only log critical state changes
-    if (!user || !socket?.connected) {
-      console.log('Critical state change:', {
-        hasUser: !!user,
-        hasSocket: !!socket,
-        socketConnected: socket?.connected,
+    if (globalSocket) {
+      console.log('Socket connection status:', {
+        id: globalSocket.id,
+        connected: globalSocket.connected,
+        hasListeners: {
+          roomState: !!globalSocket.listeners('roomState').length,
+          error: !!globalSocket.listeners('error').length,
+          disconnect: !!globalSocket.listeners('disconnect').length,
+          connect: !!globalSocket.listeners('connect').length
+        },
         timestamp: new Date().toISOString()
       });
+
+      // Log all socket events for debugging
+      const logEvent = (eventName, ...args) => {
+        console.log(`Socket event [${eventName}]:`, {
+          args,
+          timestamp: new Date().toISOString()
+        });
+      };
+
+      const events = ['connect', 'disconnect', 'error', 'connect_error', 'reconnect', 'reconnect_attempt', 'reconnect_error'];
+      events.forEach(event => {
+        globalSocket.on(event, (...args) => logEvent(event, ...args));
+      });
+
+      return () => {
+        events.forEach(event => {
+          globalSocket.off(event, logEvent);
+        });
+      };
     }
-  }, [user, socket]);
+  }, [globalSocket]);
 
+  // Initialize socket connection and room state
   useEffect(() => {
-    const fetchLobbyRoom = async () => {
-      try {
-        console.log('Fetching lobby room:', {
+    let mounted = true;
+    let retryTimeout = null;
+    setIsInitializing(true);
+    setIsDataReady(false);
+    setJoinAttempts(0);
+
+    const initializeRoom = async () => {
+      if (!user || !globalSocket) {
+        console.log('Waiting for user or socket:', {
           hasUser: !!user,
-          hasToken: !!localStorage.getItem('token'),
-          timestamp: new Date().toISOString()
-        });
-
-        if (!user) {
-          console.log('No user data available for fetching lobby room:', {
-            timestamp: new Date().toISOString()
-          });
-          return;
-        }
-
-        const token = localStorage.getItem('token');
-        if (!token) {
-          console.error('No authentication token found:', {
-            timestamp: new Date().toISOString()
-          });
-          setError('Authentication required. Please log in again.');
-          return;
-        }
-
-        const response = await axios.get('/api/rooms', {
-          params: { name: 'Lobby' },
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
-        
-        // The response is wrapped in a data field
-        const { data } = response.data;
-        console.log('Lobby room response:', {
-          success: !!data,
-          rooms: data?.rooms,
-          timestamp: new Date().toISOString()
-        });
-
-        if (!data?.rooms || !Array.isArray(data.rooms)) {
-          throw new Error('Invalid response format from server');
-        }
-
-        const lobbyRoom = data.rooms.find(room => room.name === 'Lobby');
-        if (!lobbyRoom) {
-          throw new Error('Lobby room not found');
-        }
-
-        console.log('Found lobby room:', {
-          roomId: lobbyRoom._id,
-          name: lobbyRoom.name,
-          timestamp: new Date().toISOString()
-        });
-
-        setLobbyRoomId(lobbyRoom._id);
-        setRoomState(lobbyRoom); // Set initial room state
-      } catch (err) {
-        console.error('Error fetching lobby room:', {
-          error: err.message,
-          response: err.response?.data,
-          status: err.response?.status,
-          timestamp: new Date().toISOString()
-        });
-
-        if (err.response?.status === 401) {
-          // If unauthorized, clear the token and redirect to login
-          localStorage.removeItem('token');
-          setError('Session expired. Please log in again.');
-        } else {
-          setError('Failed to fetch lobby room: ' + (err.response?.data?.error || err.message));
-        }
-      }
-    };
-
-    fetchLobbyRoom();
-  }, [user]);
-
-  // Handle room state updates
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleRoomStateUpdate = (state) => {
-      if (!state || !state.participants) {
-        console.error('Invalid room state received:', {
-          roomId: state?._id,
+          hasGlobalSocket: !!globalSocket,
           timestamp: new Date().toISOString()
         });
         return;
       }
 
-      // Update room state with proper participant handling
-      setRoomState(prevState => {
-        if (!prevState) return state;
-
-        // Create a map of existing participants for quick lookup
-        const existingParticipants = new Map(
-          prevState.participants?.map(p => [p.user._id, p]) || []
-        );
-
-        // Update participants with proper position handling
-        const updatedParticipants = state.participants.map(participant => {
-          const existingParticipant = existingParticipants.get(participant.user._id);
-          const isCurrentUser = participant.user._id === user._id;
-
-          if (!existingParticipant) {
-            // New participant
-            return {
-              ...participant,
-              lastPosition: { ...participant.position }
-            };
-          }
-
-          // Update existing participant
-          return {
-            ...participant,
-            lastPosition: isCurrentUser ? 
-              existingParticipant.lastPosition : 
-              { ...existingParticipant.position }
-          };
+      // Verify socket connection
+      if (!globalSocket.connected) {
+        console.log('Socket not connected, waiting for connection...', {
+          socketId: globalSocket.id,
+          timestamp: new Date().toISOString()
         });
 
-        // Return updated state
-        return {
-          ...state,
-          participants: updatedParticipants,
-          _lastUpdate: Date.now()
-        };
+        // Wait for connection
+        await new Promise((resolve) => {
+          if (globalSocket.connected) {
+            resolve();
+            return;
+          }
+
+          const connectHandler = () => {
+            globalSocket.off('connect', connectHandler);
+            resolve();
+          };
+
+          globalSocket.on('connect', connectHandler);
+        });
+      }
+
+      if (!roomId) {
+        console.error('No room ID provided');
+        setError('Invalid room ID');
+        setIsInitializing(false);
+        return;
+      }
+
+      console.log('Initializing room:', {
+        roomId,
+        userId: user._id,
+        username: user.username,
+        socketId: globalSocket.id,
+        socketConnected: globalSocket.connected,
+        joinAttempt: joinAttempts + 1,
+        timestamp: new Date().toISOString()
       });
+
+      try {
+        // Set up socket event handlers
+        const handleRoomState = (state) => {
+          console.log('Received room state update:', {
+            roomId: state?._id,
+            name: state?.name,
+            participants: state?.participants?.length || 0,
+            socketId: globalSocket.id,
+            timestamp: new Date().toISOString()
+          });
+          if (mounted) {
+            setRoomState(prevState => ({
+              ...state,
+              participants: state.participants || [],
+              objects: state.objects || []
+            }));
+            setSocket(globalSocket);
+            setIsDataReady(true);
+            setJoinAttempts(0);
+            setIsInitializing(false);
+          }
+        };
+
+        const handleError = (error) => {
+          console.error('Room error:', {
+            error: error.message,
+            roomId,
+            socketId: globalSocket.id,
+            joinAttempt: joinAttempts + 1,
+            timestamp: new Date().toISOString()
+          });
+          if (mounted) {
+            setError(error.message);
+            setIsDataReady(false);
+          }
+        };
+
+        const handleDisconnect = (reason) => {
+          console.log('Socket disconnected:', {
+            reason,
+            roomId,
+            socketId: globalSocket.id,
+            timestamp: new Date().toISOString()
+          });
+          if (mounted) {
+            setError('Disconnected from server. Attempting to reconnect...');
+            setIsDataReady(false);
+            setJoinAttempts(0);
+          }
+        };
+
+        // Set up event listeners
+        globalSocket.on('roomState', handleRoomState);
+        globalSocket.on('error', handleError);
+        globalSocket.on('disconnect', handleDisconnect);
+
+        // Join the room with retry logic
+        const attemptJoinRoom = async () => {
+          if (joinAttempts >= MAX_JOIN_ATTEMPTS) {
+            throw new Error(`Failed to join room after ${MAX_JOIN_ATTEMPTS} attempts`);
+          }
+
+          try {
+            // Verify socket is still connected before attempting join
+            if (!globalSocket.connected) {
+              throw new Error('Socket disconnected before join attempt');
+            }
+
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                reject(new Error('Timeout waiting for room join'));
+              }, 5000);
+
+              console.log('Attempting to join room:', {
+                roomId,
+                socketId: globalSocket.id,
+                socketConnected: globalSocket.connected,
+                attempt: joinAttempts + 1,
+                timestamp: new Date().toISOString()
+              });
+
+              // Add one-time listener for joinRoom response
+              const joinResponseHandler = (response) => {
+                console.log('Received joinRoom response:', {
+                  success: !response?.error,
+                  error: response?.error,
+                  roomId: response?.room?._id,
+                  socketId: globalSocket.id,
+                  timestamp: new Date().toISOString()
+                });
+              };
+
+              globalSocket.once('joinRoomResponse', joinResponseHandler);
+
+              // Emit join room event with just the roomId string
+              globalSocket.emit('joinRoom', roomId, (response) => {
+                clearTimeout(timeout);
+                globalSocket.off('joinRoomResponse', joinResponseHandler);
+                
+                if (response?.error) {
+                  reject(new Error(response.error));
+                } else {
+                  // Set socket state immediately after successful join
+                  setSocket(globalSocket);
+                  setIsInitializing(false);
+                  // Emit joinRoomResponse event to trigger the one-time listener
+                  globalSocket.emit('joinRoomResponse', response);
+                  resolve(response);
+                }
+              });
+            });
+
+            // If we get here, join was successful
+            if (mounted) {
+              setJoinAttempts(0);
+            }
+          } catch (error) {
+            console.error('Join attempt failed:', {
+              error: error.message,
+              socketId: globalSocket.id,
+              socketConnected: globalSocket.connected,
+              attempt: joinAttempts + 1,
+              timestamp: new Date().toISOString()
+            });
+
+            if (mounted && joinAttempts < MAX_JOIN_ATTEMPTS - 1) {
+              // Schedule retry
+              setJoinAttempts(prev => prev + 1);
+              retryTimeout = setTimeout(() => {
+                attemptJoinRoom();
+              }, JOIN_RETRY_DELAY);
+            } else {
+              throw error;
+            }
+          }
+        };
+
+        await attemptJoinRoom();
+
+      } catch (error) {
+        console.error('Room initialization error:', {
+          error: error.message,
+          roomId,
+          socketId: globalSocket.id,
+          socketConnected: globalSocket.connected,
+          finalAttempt: joinAttempts + 1,
+          timestamp: new Date().toISOString()
+        });
+        if (mounted) {
+          setError(`Failed to join room: ${error.message}`);
+          setIsInitializing(false);
+          setIsDataReady(false);
+        }
+      }
     };
 
-    socket.on('roomState', handleRoomStateUpdate);
+    initializeRoom();
 
     return () => {
-      socket.off('roomState', handleRoomStateUpdate);
+      mounted = false;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
+      if (globalSocket) {
+        globalSocket.off('roomState');
+        globalSocket.off('error');
+        globalSocket.off('disconnect');
+        globalSocket.emit('leaveRoom', roomId);
+      }
+      setIsDataReady(false);
+      setJoinAttempts(0);
     };
-  }, [socket, user]);
+  }, [user, globalSocket, isGlobalSocketConnected, roomId]);
 
   // Handle player movement
   const handlePlayerMove = useCallback((newPosition) => {
@@ -232,101 +359,6 @@ export const MainRoom = () => {
       socket.off('userLeft', handleUserLeft);
     };
   }, [socket]);
-
-  // Initialize socket connection
-  useEffect(() => {
-    if (!user || !lobbyRoomId) {
-      console.log('Cannot initialize socket:', {
-        hasUser: !!user,
-        hasLobbyRoomId: !!lobbyRoomId,
-        timestamp: new Date().toISOString()
-      });
-      return;
-    }
-
-    console.log('Initializing socket connection:', {
-      userId: user._id,
-      username: user.username,
-      lobbyRoomId,
-      timestamp: new Date().toISOString()
-    });
-
-    const token = localStorage.getItem('token');
-    if (!token) {
-      console.error('No authentication token found for socket connection');
-      setError('Authentication required. Please log in again.');
-      return;
-    }
-
-    const newSocket = io(import.meta.env.VITE_SERVER_URL, {
-      auth: { token },
-      transports: ['websocket'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      forceNew: true
-    });
-
-    // Handle authentication
-    newSocket.on('connect', () => {
-      console.log('Socket connected, authenticating...', {
-        socketId: newSocket.id,
-        userId: user._id,
-        timestamp: new Date().toISOString()
-      });
-
-      newSocket.emit('authenticate', { token }, (response) => {
-        if (response?.error) {
-          console.error('Socket authentication failed:', response.error);
-          setError('Authentication failed. Please log in again.');
-          newSocket.disconnect();
-        } else {
-          console.log('Socket authenticated successfully:', {
-            socketId: newSocket.id,
-            userId: user._id,
-            username: user.username,
-            timestamp: new Date().toISOString()
-          });
-
-          // Join room after successful authentication
-          if (lobbyRoomId) {
-            console.log('Joining room after authentication:', {
-              roomId: lobbyRoomId,
-              socketId: newSocket.id,
-              timestamp: new Date().toISOString()
-            });
-            newSocket.emit('joinRoom', lobbyRoomId);
-          }
-        }
-      });
-    });
-
-    // Handle errors
-    newSocket.on('error', (error) => {
-      console.error('Socket error:', error);
-      setError(error.message);
-    });
-
-    // Handle disconnection
-    newSocket.on('disconnect', (reason) => {
-      console.log('Socket disconnected:', {
-        reason,
-        socketId: newSocket.id,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    setSocket(newSocket);
-
-    return () => {
-      console.log('Cleaning up socket connection:', {
-        socketId: newSocket.id,
-        userId: user._id,
-        timestamp: new Date().toISOString()
-      });
-      newSocket.disconnect();
-    };
-  }, [user, lobbyRoomId]);
 
   // Scroll to bottom of messages
   useEffect(() => {
@@ -451,17 +483,86 @@ export const MainRoom = () => {
     logout();
   };
 
-  // Remove debug log for room state and socket
+  // Add debug logging for component state
   useEffect(() => {
-    // Only log critical state changes
-    if (!socket?.connected || !roomState) {
-      console.log('Critical connection state:', {
-        socketConnected: socket?.connected,
-        hasRoomState: !!roomState,
-        timestamp: new Date().toISOString()
-      });
+    console.log('MainRoom component state:', {
+      socket: socket ? {
+        id: socket.id,
+        connected: socket.connected,
+        hasHandlers: !!socket.listeners('roomState').length
+      } : null,
+      roomState: roomState ? {
+        id: roomState._id,
+        name: roomState.name,
+        participantsCount: roomState.participants?.length,
+        objectsCount: roomState.objects?.length
+      } : null,
+      user: user ? {
+        id: user._id,
+        username: user.username
+      } : null,
+      isInitializing,
+      isDataReady,
+      timestamp: new Date().toISOString()
+    });
+  }, [socket, roomState, user, isInitializing, isDataReady]);
+
+  // Render game only when all data is ready
+  const renderGame = () => {
+    // Log the current state before rendering
+    console.log('Rendering game with state:', {
+      isDataReady,
+      hasSocket: !!socket,
+      socketConnected: socket?.connected,
+      socketId: socket?.id,
+      hasRoomState: !!roomState,
+      roomId: roomState?._id,
+      hasUser: !!user,
+      userId: user?._id,
+      isInitializing,
+      timestamp: new Date().toISOString()
+    });
+
+    if (!isDataReady || !socket?.connected || !roomState?._id || !user?._id || isInitializing) {
+      return (
+        <div className="h-full flex items-center justify-center">
+          <p className="text-gray-500">
+            {isInitializing ? 'Initializing room...' :
+             !socket ? 'Connecting to server...' :
+             !socket.connected ? 'Waiting for connection...' :
+             !roomState ? `Loading room... ${joinAttempts > 0 ? `(Attempt ${joinAttempts + 1}/${MAX_JOIN_ATTEMPTS})` : ''}` :
+             !user ? 'Loading user data...' :
+             !roomState._id ? 'Initializing room data...' :
+             !isDataReady ? 'Preparing game data...' :
+             'Preparing game...'}
+          </p>
+        </div>
+      );
     }
-  }, [socket, roomState]);
+
+    return (
+      <>
+        <PhaserGame
+          key={`game-${roomState._id}-${socket.id}-${user._id}`}
+          roomState={roomState}
+          socket={socket}
+          user={user}
+        />
+        {/* Debug overlay */}
+        <div className="absolute top-0 right-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
+          <div>Socket ID: {socket.id}</div>
+          <div>Socket Connected: {socket.connected ? 'Yes' : 'No'}</div>
+          <div>Room ID: {roomState._id}</div>
+          <div>Room Name: {roomState.name}</div>
+          <div>Players: {roomState.participants?.length || 0}</div>
+          <div>Objects: {roomState.objects?.length || 0}</div>
+          <div>User ID: {user._id}</div>
+          <div>Username: {user.username}</div>
+          <div>Last Update: {new Date().toISOString()}</div>
+        </div>
+      </>
+    );
+  };
 
   if (error) {
     return (
@@ -481,7 +582,7 @@ export const MainRoom = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col">
+    <div className="flex flex-col h-screen bg-gray-100">
       {/* Header */}
       <header className="bg-white shadow">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex justify-between items-center">
@@ -503,42 +604,9 @@ export const MainRoom = () => {
       {/* Main Content */}
       <div className="flex-1 flex">
         {/* Game Container */}
-        <div className="flex-1 p-4" ref={gameContainerRef}>
-          <div className="bg-white rounded-lg shadow h-full overflow-hidden relative">
-            {!socket ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-gray-500">Connecting to server...</p>
-              </div>
-            ) : !socket.connected ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-gray-500">Waiting for connection...</p>
-              </div>
-            ) : !roomState ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-gray-500">Loading room...</p>
-              </div>
-            ) : !roomState.objects ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-gray-500">Initializing game objects...</p>
-              </div>
-            ) : (
-              <>
-                <PhaserGame
-                  key={`game-canvas-${roomState._id}`}
-                  roomState={roomState}
-                  socket={socket}
-                  user={user}
-                />
-                {/* Debug overlay */}
-                <div className="absolute top-0 right-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
-                  <div>Socket ID: {socket.id}</div>
-                  <div>Room ID: {roomState._id}</div>
-                  <div>Players: {roomState.participants?.length}</div>
-                  <div>Objects: {roomState.objects?.length}</div>
-                  <div>Room Name: {roomState.name}</div>
-                </div>
-              </>
-            )}
+        <div className="flex-1 relative" ref={gameContainerRef}>
+          <div className="absolute inset-0 bg-white rounded-lg shadow overflow-hidden">
+            {renderGame()}
           </div>
         </div>
 
@@ -550,7 +618,7 @@ export const MainRoom = () => {
             <div className="space-y-2">
               {roomState?.participants?.map((participant) => (
                 <div
-                  key={participant.user._id}
+                  key={`${participant.user._id}-${participant.user.socketId || 'unknown'}`}
                   className="flex items-center space-x-2"
                 >
                   <div className={`w-2 h-2 rounded-full ${
@@ -631,4 +699,6 @@ export const MainRoom = () => {
       </div>
     </div>
   );
-}; 
+};
+
+export default MainRoom; 

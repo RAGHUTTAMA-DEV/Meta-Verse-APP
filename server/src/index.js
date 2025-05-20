@@ -196,10 +196,11 @@ io.on('connection', (socket) => {
   });
 
   // Handle room joining with improved state management
-  socket.on('joinRoom', async (roomId) => {
+  socket.on('joinRoom', async (roomId, callback) => {
     try {
       if (!userId) {
-        throw new Error('User not authenticated');
+        callback?.({ error: 'User not authenticated' });
+        return;
       }
 
       const room = await getRoomState(roomId);
@@ -238,19 +239,45 @@ io.on('connection', (socket) => {
         p => p.user._id.toString() === userId.toString()
       );
 
+      // Get socket ID for the participant
+      const participantSocket = Array.from(io.sockets.sockets.values())
+        .find(s => s.user?._id?.toString() === userId.toString());
+
       io.to(roomId).emit('userJoined', {
         userId: user._id,
         username: user.username,
         avatar: user.avatar,
         position: participant.position,
-        lastPosition: participant.lastPosition
+        lastPosition: participant.lastPosition,
+        socketId: participantSocket?.id
       });
 
+      // Update room state with socket IDs
+      const updatedRoom = await getRoomState(roomId);
+      updatedRoom.participants = updatedRoom.participants.map(p => ({
+        ...p.toObject(),
+        user: {
+          ...p.user.toObject(),
+          socketId: Array.from(io.sockets.sockets.values())
+            .find(s => s.user?._id?.toString() === p.user._id.toString())?.id
+        }
+      }));
+
       // Broadcast updated room state
-      await broadcastRoomState(roomId);
+      io.to(roomId).emit('roomState', updatedRoom);
+
+      // Send success response
+      callback?.({ 
+        success: true, 
+        room: {
+          _id: room._id,
+          name: room.name,
+          participants: updatedRoom.participants
+        }
+      });
     } catch (error) {
       console.error('Error joining room:', error);
-      socket.emit('error', { message: error.message });
+      callback?.({ error: error.message });
     }
   });
 
