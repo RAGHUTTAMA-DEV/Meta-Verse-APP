@@ -15,12 +15,12 @@ const auth = require('../middleware/auth');
 router.use(auth);
 
 // Room routes
-router.post('/', createRoom);                    // Create new room
-router.get('/', getRooms);                      // Get all public rooms
-router.get('/:roomId', getRoom);                // Get specific room
-router.post('/:roomId/join', joinRoom);         // Join a room
-router.post('/:roomId/leave', leaveRoom);       // Leave a room
-router.patch('/:roomId', updateRoom);           // Update room settings
-router.delete('/:roomId', deleteRoom);          // Delete room
+router.post('/', createRoom);                    
+router.get('/', getRooms);                      
+router.get('/:roomId', getRoom);                
+router.post('/:roomId/join', joinRoom);         
+router.post('/:roomId/leave', leaveRoom);       
+router.patch('/:roomId', updateRoom);           
+router.delete('/:roomId', deleteRoom);         
 
 module.exports = router; 

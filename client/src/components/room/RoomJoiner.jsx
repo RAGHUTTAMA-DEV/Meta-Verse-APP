@@ -18,8 +18,7 @@ const RoomJoiner = ({ onJoin }) => {
   useEffect(() => {
     fetchRooms();
     
-    // Listen for room updates
-    if (socket) {
+      if (socket) {
       socket.on('roomState', handleRoomState);
       socket.on('error', handleError);
     }

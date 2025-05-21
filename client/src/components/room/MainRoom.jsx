@@ -22,9 +22,8 @@ export const MainRoom = () => {
   const gameContainerRef = useRef(null);
   const [joinAttempts, setJoinAttempts] = useState(0);
   const MAX_JOIN_ATTEMPTS = 3;
-  const JOIN_RETRY_DELAY = 2000; // 2 seconds
+  const JOIN_RETRY_DELAY = 2000;
 
-  // Add socket connection status logging
   useEffect(() => {
     if (globalSocket) {
       console.log('Socket connection status:', {
@@ -39,7 +38,6 @@ export const MainRoom = () => {
         timestamp: new Date().toISOString()
       });
 
-      // Log all socket events for debugging
       const logEvent = (eventName, ...args) => {
         console.log(`Socket event [${eventName}]:`, {
           args,
@@ -60,7 +58,6 @@ export const MainRoom = () => {
     }
   }, [globalSocket]);
 
-  
   useEffect(() => {
     let mounted = true;
     let retryTimeout = null;
@@ -78,7 +75,6 @@ export const MainRoom = () => {
         return;
       }
 
-      // Wait for socket to be connected with timeout
       const waitForSocketConnection = () => new Promise((resolve, reject) => {
         if (globalSocket.connected) {
           resolve();
@@ -100,7 +96,6 @@ export const MainRoom = () => {
       });
 
       try {
-        // Wait for socket connection
         await waitForSocketConnection();
 
         if (!roomId) {
@@ -117,7 +112,6 @@ export const MainRoom = () => {
           timestamp: new Date().toISOString()
         });
 
-        // Set up room state handlers
         const handleRoomState = (state) => {
           if (!mounted) return;
           
@@ -140,7 +134,6 @@ export const MainRoom = () => {
           setIsInitializing(false);
         };
 
-        // Join room with retry logic
         const attemptJoinRoom = async () => {
           if (joinAttempts >= MAX_JOIN_ATTEMPTS) {
             throw new Error(`Failed to join room after ${MAX_JOIN_ATTEMPTS} attempts`);
@@ -196,7 +189,6 @@ export const MainRoom = () => {
           }
         };
 
-        // Set up event handlers
         globalSocket.on('roomState', handleRoomState);
         globalSocket.on('error', (error) => {
           console.error('Room error:', error);
@@ -206,7 +198,6 @@ export const MainRoom = () => {
           }
         });
 
-        // Attempt to join room
         await attemptJoinRoom();
 
       } catch (error) {
@@ -244,7 +235,6 @@ export const MainRoom = () => {
     };
   }, [user, globalSocket, roomId]);
 
-  // Handle player movement
   const handlePlayerMove = useCallback((newPosition) => {
     if (!socket?.connected || !user || !lobbyRoomId) {
       console.warn('Cannot send movement update:', {
@@ -257,7 +247,6 @@ export const MainRoom = () => {
       return;
     }
 
-    // Update local state immediately for smooth movement
     setRoomState(prevState => {
       if (!prevState) return prevState;
 
@@ -279,11 +268,9 @@ export const MainRoom = () => {
       };
     });
 
-    // Send movement update to server
     socket.emit('userMove', { position: newPosition });
   }, [socket, user, lobbyRoomId]);
 
-  // Handle user joined/left events
   useEffect(() => {
     if (!socket) return;
 
@@ -312,12 +299,10 @@ export const MainRoom = () => {
     };
   }, [socket]);
 
-  // Scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Handle chat messages
   useEffect(() => {
     if (!socket) return;
 
@@ -328,14 +313,12 @@ export const MainRoom = () => {
         timestamp: new Date().toISOString()
       });
 
-      // Add message to state with proper formatting
       setMessages(prev => [...prev, {
         ...message,
         createdAt: new Date(message.createdAt),
         type: message.type || 'chat'
       }]);
 
-      // Scroll to bottom after a short delay to ensure smooth scrolling
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -367,7 +350,6 @@ export const MainRoom = () => {
     };
   }, [socket]);
 
-  // Handle sending messages
   const handleSendMessage = async (e) => {
     e.preventDefault();
 
@@ -382,12 +364,11 @@ export const MainRoom = () => {
     }
 
     const messageText = newMessage.trim();
-    setNewMessage(''); // Clear input immediately for better UX
+    setNewMessage('');
 
     try {
-      // Optimistically add message to UI
       const tempMessage = {
-        _id: Date.now().toString(), // Temporary ID
+        _id: Date.now().toString(),
         message: messageText,
         user: {
           _id: user._id,
@@ -396,24 +377,19 @@ export const MainRoom = () => {
         },
         createdAt: new Date(),
         type: 'chat',
-        isPending: true // Mark as pending until server confirms
+        isPending: true
       };
 
       setMessages(prev => [...prev, tempMessage]);
 
-      // Send to server
       socket.emit('chatMessage', { message: messageText }, (response) => {
         if (response?.error) {
           console.error('Chat error:', response.error);
           setError('Failed to send message: ' + response.error);
           
-          // Remove failed message
           setMessages(prev => prev.filter(m => m._id !== tempMessage._id));
-          
-          // Restore message text
           setNewMessage(messageText);
         } else {
-          // Update message with server response
           setMessages(prev => prev.map(m => 
             m._id === tempMessage._id 
               ? { ...m, _id: response.messageId, isPending: false }
@@ -424,7 +400,7 @@ export const MainRoom = () => {
     } catch (err) {
       console.error('Error sending message:', err);
       setError('Failed to send message. Please try again.');
-      setNewMessage(messageText); // Restore message text
+      setNewMessage(messageText);
     }
   };
 
@@ -435,33 +411,7 @@ export const MainRoom = () => {
     logout();
   };
 
-  // Add debug logging for component state
-  useEffect(() => {
-    console.log('MainRoom component state:', {
-      socket: socket ? {
-        id: socket.id,
-        connected: socket.connected,
-        hasHandlers: !!socket.listeners('roomState').length
-      } : null,
-      roomState: roomState ? {
-        id: roomState._id,
-        name: roomState.name,
-        participantsCount: roomState.participants?.length,
-        objectsCount: roomState.objects?.length
-      } : null,
-      user: user ? {
-        id: user._id,
-        username: user.username
-      } : null,
-      isInitializing,
-      isDataReady,
-      timestamp: new Date().toISOString()
-    });
-  }, [socket, roomState, user, isInitializing, isDataReady]);
-
-  // Render game only when all data is ready
   const renderGame = () => {
-    // Log the current state before rendering
     console.log('Rendering game with state:', {
       isDataReady,
       hasSocket: !!socket,
@@ -500,7 +450,6 @@ export const MainRoom = () => {
           socket={socket}
           user={user}
         />
-        {/* Debug overlay */}
         <div className="absolute top-0 right-0 p-2 text-xs text-gray-600 bg-white bg-opacity-50">
           <div>Socket ID: {socket.id}</div>
           <div>Socket Connected: {socket.connected ? 'Yes' : 'No'}</div>
@@ -535,7 +484,6 @@ export const MainRoom = () => {
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
-      {/* Header */}
       <header className="bg-white shadow">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-900">
@@ -553,18 +501,14 @@ export const MainRoom = () => {
         </div>
       </header>
 
-      {/* Main Content */}
       <div className="flex-1 flex">
-        {/* Game Container */}
         <div className="flex-1 relative" ref={gameContainerRef}>
           <div className="absolute inset-0 bg-white rounded-lg shadow overflow-hidden">
             {renderGame()}
           </div>
         </div>
 
-        {/* Chat and Users Sidebar */}
         <div className="w-80 bg-white shadow-lg flex flex-col">
-          {/* Users List */}
           <div className="p-4 border-b">
             <h2 className="text-lg font-semibold mb-2">Users Online</h2>
             <div className="space-y-2">
@@ -582,7 +526,6 @@ export const MainRoom = () => {
             </div>
           </div>
 
-          {/* Chat Messages */}
           <div className="flex-1 p-4 overflow-y-auto">
             <div className="space-y-4">
               {messages.map((message, index) => (
@@ -622,7 +565,6 @@ export const MainRoom = () => {
             </div>
           </div>
 
-          {/* Message Input */}
           <form onSubmit={handleSendMessage} className="p-4 border-t">
             <div className="flex space-x-2">
               <input
@@ -632,7 +574,7 @@ export const MainRoom = () => {
                 placeholder="Type a message..."
                 className="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 disabled={!socket?.connected}
-                maxLength={500} // Prevent extremely long messages
+                maxLength={500}
               />
               <button
                 type="submit"

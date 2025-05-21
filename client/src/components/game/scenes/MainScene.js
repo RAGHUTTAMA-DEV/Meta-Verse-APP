@@ -204,12 +204,10 @@ export default class MainScene extends Phaser.Scene {
       return;
     }
 
-    // Create player at initial position or center of screen
     const startX = this.roomState?.objects?.spawnPoint?.x || 400;
     const startY = this.roomState?.objects?.spawnPoint?.y || 300;
 
     try {
-      // Create the player sprite
       this.player = new PlayerSprite(this, startX, startY, this.user);
       console.log('Player sprite created:', {
         position: { x: startX, y: startY },
@@ -217,17 +215,14 @@ export default class MainScene extends Phaser.Scene {
         label: !!this.player.label
       });
       
-      // Add physics body to player sprite
       this.physics.add.existing(this.player.sprite);
       this.player.sprite.body.setCircle(this.player.radius);
       console.log('Physics body added to player');
       
-      // Set up camera to follow player
       this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
       this.cameras.main.setZoom(1);
       console.log('Camera set to follow player');
 
-      // Verify player creation
       console.log('Player creation complete:', {
         position: { x: this.player.sprite.x, y: this.player.sprite.y },
         hasPhysics: !!this.player.sprite.body,
@@ -263,17 +258,14 @@ export default class MainScene extends Phaser.Scene {
       timestamp: new Date().toISOString()
     });
 
-    // Clear existing scene
     this.clearScene();
 
     // Create new scene elements
     if (this.roomState && this.user) {
       console.log('Creating new scene elements');
       
-      // Create player first
       this.createPlayer();
       
-      // Create room objects
       if (this.roomState.objects) {
         console.log('Creating room objects:', {
           count: this.roomState.objects.length
@@ -281,8 +273,6 @@ export default class MainScene extends Phaser.Scene {
         this.roomObjects = new RoomObjects(this);
         this.roomState.objects.forEach(obj => this.roomObjects.createObject(obj));
       }
-
-      // Create other players
       if (this.roomState.participants) {
         console.log('Creating other players:', {
           count: this.roomState.participants.length,
@@ -301,7 +291,6 @@ export default class MainScene extends Phaser.Scene {
         });
       }
 
-      // Set up network manager
       if (this.socket && this.user) {
         console.log('Setting up network manager with data:', {
           userId: this.user._id,
@@ -341,7 +330,6 @@ export default class MainScene extends Phaser.Scene {
       timestamp: new Date().toISOString()
     });
 
-    // Destroy player
     if (this.player) {
       try {
         this.player.sprite.destroy();
@@ -352,7 +340,6 @@ export default class MainScene extends Phaser.Scene {
       this.player = null;
     }
     
-    // Destroy remote players
     for (const [id, player] of this.remotePlayers.entries()) {
       try {
         player.sprite.destroy();
@@ -363,7 +350,6 @@ export default class MainScene extends Phaser.Scene {
     }
     this.remotePlayers.clear();
     
-    // Destroy room objects
     if (this.roomObjects) {
       try {
         this.roomObjects.destroy();
@@ -375,8 +361,7 @@ export default class MainScene extends Phaser.Scene {
   }
 
   preload() {
-    // No external assets needed for now
-  }
+    }
 
   create() {
     console.log('Creating scene:', {
@@ -386,11 +371,9 @@ export default class MainScene extends Phaser.Scene {
       timestamp: new Date().toISOString()
     });
 
-    // Create modern background
     this.add.rectangle(0, 0, 800, 600, this.mapSystem?.mapConfig.colors.background || 0xf8fafc)
       .setOrigin(0, 0);
     
-    // Draw modern grid
     const grid = this.add.graphics();
     grid.lineStyle(1, this.mapSystem?.mapConfig.colors.grid || 0xe2e8f0, 0.5);
     for (let x = 0; x <= 800; x += 40) {
@@ -403,7 +386,6 @@ export default class MainScene extends Phaser.Scene {
     }
     grid.strokePath();
 
-    // Debug text
     this.debugText = this.add.text(10, 10, '', {
       fontFamily: 'Arial',
       fontSize: 14,
@@ -413,7 +395,6 @@ export default class MainScene extends Phaser.Scene {
     });
     this.debugText.setDepth(1000);
 
-    // Controls
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.W,
@@ -422,11 +403,9 @@ export default class MainScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D
     });
 
-    // Initialize modern map system
     this.mapSystem = new ModernMapSystem(this);
     this.mapSystem.initialize();
 
-    // Add current room to map if we have room state
     if (this.roomState) {
       this.mapSystem.addRoom({
         id: this.roomState._id,
@@ -438,7 +417,6 @@ export default class MainScene extends Phaser.Scene {
       this.mapSystem.setCurrentRoom(this.roomState._id);
     }
 
-    // Mark scene as ready after a short delay to ensure everything is initialized
     this.time.delayedCall(100, () => {
       console.log('Scene ready, checking data:', {
         hasRoomState: !!this.roomState,
@@ -448,7 +426,6 @@ export default class MainScene extends Phaser.Scene {
       });
 
       this.isReady = true;
-      // Create initial scene state if we have all required data
       if (this.roomState && this.socket && this.user) {
         this.refreshScene();
       } else {
@@ -460,12 +437,10 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Listen for scene updates
     this.events.on('updateData', this.updateSceneData, this);
   }
 
   setupSocketHandlers() {
-    // Listen for connection status changes
     this.events.on('connectionStatusChanged', (isConnected) => {
       console.log('Connection status changed:', {
         isConnected,
@@ -474,10 +449,8 @@ export default class MainScene extends Phaser.Scene {
       });
       this.isConnected = isConnected;
       
-      // Update debug text immediately
       this.updateDebugText();
       
-      // If disconnected, show a message
       if (!isConnected) {
         this.showConnectionMessage('Disconnected from server. Attempting to reconnect...');
       } else {
@@ -485,17 +458,14 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle room state updates
     this.events.on('updateRemotePlayers', (remoteParticipants) => {
       if (!this.isConnected) return;
 
       remoteParticipants.forEach(p => {
         if (!this.remotePlayers.has(p.user._id)) {
-          // Create new remote player
           const remotePlayer = new PlayerSprite(this, p.position.x, p.position.y, p.user);
           this.remotePlayers.set(p.user._id, remotePlayer);
         } else {
-          // Update existing remote player with smooth movement
           const remotePlayer = this.remotePlayers.get(p.user._id);
           this.tweens.add({
             targets: [remotePlayer.sprite, remotePlayer.label],
@@ -510,7 +480,6 @@ export default class MainScene extends Phaser.Scene {
         }
       });
 
-      // Remove players who left
       const currentPlayerIds = new Set(remoteParticipants.map(p => p.user._id));
       for (const [id, player] of this.remotePlayers.entries()) {
         if (!currentPlayerIds.has(id)) {
@@ -521,7 +490,6 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle individual player movement updates
     this.events.on('playerMoved', (data) => {
       if (!this.isConnected) return;
 
@@ -541,7 +509,6 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle player join/leave events
     this.events.on('playerJoined', (data) => {
       if (!this.isConnected) return;
 
@@ -586,8 +553,7 @@ export default class MainScene extends Phaser.Scene {
   update(time, delta) {
     if (!this.player || !this.player.sprite || !this.isConnected) return;
 
-    // Update local player movement
-    const speed = this.playerSpeed * (delta / 1000); // Convert to pixels per frame
+    const speed = this.playerSpeed * (delta / 1000);
     let dx = 0, dy = 0;
 
     if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= speed;
@@ -595,7 +561,6 @@ export default class MainScene extends Phaser.Scene {
     if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= speed;
     if (this.cursors.down.isDown || this.wasd.down.isDown) dy += speed;
 
-    // Normalize diagonal movement
     if (dx !== 0 && dy !== 0) {
       const factor = 1 / Math.sqrt(2);
       dx *= factor;
@@ -603,13 +568,11 @@ export default class MainScene extends Phaser.Scene {
     }
 
     if (dx !== 0 || dy !== 0) {
-      // Update local player position
       this.player.sprite.x += dx;
       this.player.sprite.y += dy;
       this.player.label.x = this.player.sprite.x;
       this.player.label.y = this.player.sprite.y - (this.player.radius + 4);
 
-      // Send position update to server
       if (this.network) {
         this.network.sendPlayerUpdate({
           x: this.player.sprite.x,
@@ -618,10 +581,10 @@ export default class MainScene extends Phaser.Scene {
       }
     }
 
-    // Update debug text
+      // Update debug text
     this.updateDebugText();
 
-    // Update map system
+      // Update map system
     if (this.mapSystem) {
       this.mapSystem.update();
     }

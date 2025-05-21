@@ -12,9 +12,9 @@ const CreateRoom = () => {
   const [error, setError] = useState('');
   const [formData, setFormData] = useState({
     name: '',
-    type: 'public', // public, private, or hub
+    type: 'public', 
     password: '',
-    template: 'default', // default, office, lounge, etc.
+    template: 'default', 
     maxPlayers: 10,
     description: ''
   });
@@ -34,7 +34,6 @@ const CreateRoom = () => {
 
     try {
       console.log('Creating room with data:', formData);
-      // Create room through API
       const response = await roomAPI.createRoom({
         name: formData.name,
         description: formData.description,
@@ -57,7 +56,6 @@ const CreateRoom = () => {
         throw new Error('Room ID not found in response');
       }
 
-      // Authenticate socket if not already authenticated
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('No authentication token found');
@@ -76,9 +74,7 @@ const CreateRoom = () => {
       });
 
       console.log('Joining room:', roomId);
-      // Join the room through socket and wait for roomState event
       await new Promise((resolve, reject) => {
-        // Set up one-time listener for roomState
         const roomStateHandler = (roomState) => {
           if (roomState._id === roomId) {
             socket.off('roomState', roomStateHandler);
@@ -86,27 +82,22 @@ const CreateRoom = () => {
           }
         };
 
-        // Set up one-time listener for error
         const errorHandler = (error) => {
           socket.off('error', errorHandler);
           reject(new Error(error.message));
         };
 
-        // Set timeout for room joining
         const timeout = setTimeout(() => {
           socket.off('roomState', roomStateHandler);
           socket.off('error', errorHandler);
           reject(new Error('Timeout waiting for room join'));
         }, 5000);
 
-        // Listen for room state updates
         socket.on('roomState', roomStateHandler);
         socket.on('error', errorHandler);
 
-        // Emit join room event
         socket.emit('joinRoom', roomId);
 
-        // Clean up on resolve/reject
         Promise.race([
           new Promise(resolve => socket.once('roomState', resolve)),
           new Promise((_, reject) => socket.once('error', reject))
@@ -117,7 +108,6 @@ const CreateRoom = () => {
         });
       });
       
-      // Navigate to the game view with the new room
       navigate(`/game/${roomId}`);
     } catch (err) {
       console.error('Room creation error:', err);

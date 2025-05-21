@@ -7,28 +7,23 @@ require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const app = require('./app');
 
-// Import routes
 const authRoutes = require('./routes/authRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const User = require('./models/UserModel');
 const Room = require('./models/Room');
 
-// Function to create initial game objects for a room
 async function createInitialGameObjects(room) {
   try {
-    // Create some walls
     const walls = [
-      // Outer walls
       { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 800, height: 20 } },
       { type: 'wall', position: { x: 0, y: 580 }, properties: { color: '#4a5568', width: 800, height: 20 } },
       { type: 'wall', position: { x: 0, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
       { type: 'wall', position: { x: 780, y: 0 }, properties: { color: '#4a5568', width: 20, height: 600 } },
       
-      // Inner walls and objects
       { type: 'wall', position: { x: 200, y: 200 }, properties: { color: '#718096', width: 400, height: 20 } },
       { type: 'wall', position: { x: 200, y: 400 }, properties: { color: '#718096', width: 400, height: 20 } },
       { type: 'wall', position: { x: 300, y: 200 }, properties: { color: '#718096', width: 20, height: 220 } },
-      
+
       // Interactive objects
       { type: 'furniture', position: { x: 100, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
       { type: 'furniture', position: { x: 150, y: 100 }, properties: { color: '#805ad5', type: 'chair' } },
@@ -354,7 +349,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle chat messages with improved validation
   socket.on('chatMessage', async (data, callback) => {
     try {
       if (!userId || !currentRoomId) {
@@ -388,7 +382,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle WebRTC signaling with improved validation
   socket.on('signal', (data) => {
     try {
       if (!userId) {
@@ -412,7 +405,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnection with cleanup
   socket.on('disconnect', async (reason) => {
     try {
       if (userId) {
@@ -428,7 +420,6 @@ io.on('connection', (socket) => {
         await handleRoomLeave(currentRoomId);
       }
 
-      // Clear room states if no active connections
       if (io.sockets.adapter.rooms.get(currentRoomId)?.size === 0) {
         roomStates.delete(currentRoomId);
       }
@@ -437,7 +428,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Helper function to handle room leave
   async function handleRoomLeave(roomId) {
     try {
       const room = await getRoomState(roomId);
@@ -452,16 +442,15 @@ io.on('connection', (socket) => {
   }
 });
 
-// Connect to MongoDB and start server
 if (process.env.NODE_ENV !== 'test') {
   mongoose.connect(process.env.MONGODB_URI)
     .then(async () => {
       console.log('Connected to MongoDB');
       
-      // Ensure lobby room exists
+      
       await ensureLobbyRoom();
       
-      // Start server
+      
       const PORT = process.env.PORT || 5000;
       server.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
@@ -475,7 +464,6 @@ if (process.env.NODE_ENV !== 'test') {
 
 module.exports = { app, server, io };
 
-// Basic route for testing
 app.get('/', (req, res) => {
   res.json({ message: 'Metaverse Server is running' });
 }); 
