@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # 2D Metaverse App
+=======
+# Meta-Verse-APP# 2D Metaverse App
+>>>>>>> a2def94294d4ec829ede109e31fc2f58fd95e283
 
 A real-time multiplayer 2D metaverse application built with React, Phaser 3, and Socket.IO. This project allows users to create and join virtual rooms, interact with other players, and customize their avatars in a 2D environment.
 
@@ -175,12 +179,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - React team for the amazing framework
 - All contributors and supporters of the project
 
+<<<<<<< HEAD
 ## Support
 
 For support, please:
 1. Check the [documentation](docs/)
 2. Open an issue
 3. Join our [Discord community](https://discord.gg/your-discord)
+=======
+
+>>>>>>> a2def94294d4ec829ede109e31fc2f58fd95e283
 
 ## Roadmap
 
@@ -191,4 +199,10 @@ For support, please:
 - [ ] Add room categories
 - [ ] Implement room moderation
 - [ ] Add custom avatars
+<<<<<<< HEAD
 - [ ] Add room events and activities
+=======
+- [ ] Add room events and activities
+
+And this is just the main base game will polish this well in coming days
+>>>>>>> a2def94294d4ec829ede109e31fc2f58fd95e283
