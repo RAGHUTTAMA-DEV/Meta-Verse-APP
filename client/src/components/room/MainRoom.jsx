@@ -60,7 +60,7 @@ export const MainRoom = () => {
     }
   }, [globalSocket]);
 
-  // Initialize socket connection and room state
+  
   useEffect(() => {
     let mounted = true;
     let retryTimeout = null;
@@ -78,49 +78,49 @@ export const MainRoom = () => {
         return;
       }
 
-      // Verify socket connection
-      if (!globalSocket.connected) {
-        console.log('Socket not connected, waiting for connection...', {
-          socketId: globalSocket.id,
-          timestamp: new Date().toISOString()
-        });
+      // Wait for socket to be connected with timeout
+      const waitForSocketConnection = () => new Promise((resolve, reject) => {
+        if (globalSocket.connected) {
+          resolve();
+          return;
+        }
 
-        // Wait for connection
-        await new Promise((resolve) => {
-          if (globalSocket.connected) {
-            resolve();
-            return;
-          }
+        const timeout = setTimeout(() => {
+          globalSocket.off('connect', connectHandler);
+          reject(new Error('Socket connection timeout'));
+        }, 5000);
 
-          const connectHandler = () => {
-            globalSocket.off('connect', connectHandler);
-            resolve();
-          };
+        const connectHandler = () => {
+          clearTimeout(timeout);
+          globalSocket.off('connect', connectHandler);
+          resolve();
+        };
 
-          globalSocket.on('connect', connectHandler);
-        });
-      }
-
-      if (!roomId) {
-        console.error('No room ID provided');
-        setError('Invalid room ID');
-        setIsInitializing(false);
-        return;
-      }
-
-      console.log('Initializing room:', {
-        roomId,
-        userId: user._id,
-        username: user.username,
-        socketId: globalSocket.id,
-        socketConnected: globalSocket.connected,
-        joinAttempt: joinAttempts + 1,
-        timestamp: new Date().toISOString()
+        globalSocket.on('connect', connectHandler);
       });
 
       try {
-        // Set up socket event handlers
+        // Wait for socket connection
+        await waitForSocketConnection();
+
+        if (!roomId) {
+          throw new Error('No room ID provided');
+        }
+
+        console.log('Socket connected, initializing room:', {
+          roomId,
+          userId: user._id,
+          username: user.username,
+          socketId: globalSocket.id,
+          socketConnected: globalSocket.connected,
+          joinAttempt: joinAttempts + 1,
+          timestamp: new Date().toISOString()
+        });
+
+        // Set up room state handlers
         const handleRoomState = (state) => {
+          if (!mounted) return;
+          
           console.log('Received room state update:', {
             roomId: state?._id,
             name: state?.name,
@@ -128,64 +128,25 @@ export const MainRoom = () => {
             socketId: globalSocket.id,
             timestamp: new Date().toISOString()
           });
-          if (mounted) {
-            setRoomState(prevState => ({
-              ...state,
-              participants: state.participants || [],
-              objects: state.objects || []
-            }));
-            setSocket(globalSocket);
-            setIsDataReady(true);
-            setJoinAttempts(0);
-            setIsInitializing(false);
-          }
+
+          setRoomState(prevState => ({
+            ...state,
+            participants: state.participants || [],
+            objects: state.objects || []
+          }));
+          setSocket(globalSocket);
+          setIsDataReady(true);
+          setJoinAttempts(0);
+          setIsInitializing(false);
         };
 
-        const handleError = (error) => {
-          console.error('Room error:', {
-            error: error.message,
-            roomId,
-            socketId: globalSocket.id,
-            joinAttempt: joinAttempts + 1,
-            timestamp: new Date().toISOString()
-          });
-          if (mounted) {
-            setError(error.message);
-            setIsDataReady(false);
-          }
-        };
-
-        const handleDisconnect = (reason) => {
-          console.log('Socket disconnected:', {
-            reason,
-            roomId,
-            socketId: globalSocket.id,
-            timestamp: new Date().toISOString()
-          });
-          if (mounted) {
-            setError('Disconnected from server. Attempting to reconnect...');
-            setIsDataReady(false);
-            setJoinAttempts(0);
-          }
-        };
-
-        // Set up event listeners
-        globalSocket.on('roomState', handleRoomState);
-        globalSocket.on('error', handleError);
-        globalSocket.on('disconnect', handleDisconnect);
-
-        // Join the room with retry logic
+        // Join room with retry logic
         const attemptJoinRoom = async () => {
           if (joinAttempts >= MAX_JOIN_ATTEMPTS) {
             throw new Error(`Failed to join room after ${MAX_JOIN_ATTEMPTS} attempts`);
           }
 
           try {
-            // Verify socket is still connected before attempting join
-            if (!globalSocket.connected) {
-              throw new Error('Socket disconnected before join attempt');
-            }
-
             await new Promise((resolve, reject) => {
               const timeout = setTimeout(() => {
                 reject(new Error('Timeout waiting for room join'));
@@ -199,38 +160,19 @@ export const MainRoom = () => {
                 timestamp: new Date().toISOString()
               });
 
-              // Add one-time listener for joinRoom response
-              const joinResponseHandler = (response) => {
-                console.log('Received joinRoom response:', {
-                  success: !response?.error,
-                  error: response?.error,
-                  roomId: response?.room?._id,
-                  socketId: globalSocket.id,
-                  timestamp: new Date().toISOString()
-                });
-              };
-
-              globalSocket.once('joinRoomResponse', joinResponseHandler);
-
-              // Emit join room event with just the roomId string
               globalSocket.emit('joinRoom', roomId, (response) => {
                 clearTimeout(timeout);
-                globalSocket.off('joinRoomResponse', joinResponseHandler);
                 
                 if (response?.error) {
                   reject(new Error(response.error));
                 } else {
-                  // Set socket state immediately after successful join
                   setSocket(globalSocket);
                   setIsInitializing(false);
-                  // Emit joinRoomResponse event to trigger the one-time listener
-                  globalSocket.emit('joinRoomResponse', response);
                   resolve(response);
                 }
               });
             });
 
-            // If we get here, join was successful
             if (mounted) {
               setJoinAttempts(0);
             }
@@ -244,7 +186,6 @@ export const MainRoom = () => {
             });
 
             if (mounted && joinAttempts < MAX_JOIN_ATTEMPTS - 1) {
-              // Schedule retry
               setJoinAttempts(prev => prev + 1);
               retryTimeout = setTimeout(() => {
                 attemptJoinRoom();
@@ -255,17 +196,29 @@ export const MainRoom = () => {
           }
         };
 
+        // Set up event handlers
+        globalSocket.on('roomState', handleRoomState);
+        globalSocket.on('error', (error) => {
+          console.error('Room error:', error);
+          if (mounted) {
+            setError(error.message);
+            setIsDataReady(false);
+          }
+        });
+
+        // Attempt to join room
         await attemptJoinRoom();
 
       } catch (error) {
         console.error('Room initialization error:', {
           error: error.message,
           roomId,
-          socketId: globalSocket.id,
-          socketConnected: globalSocket.connected,
+          socketId: globalSocket?.id,
+          socketConnected: globalSocket?.connected,
           finalAttempt: joinAttempts + 1,
           timestamp: new Date().toISOString()
         });
+        
         if (mounted) {
           setError(`Failed to join room: ${error.message}`);
           setIsInitializing(false);
@@ -284,13 +237,12 @@ export const MainRoom = () => {
       if (globalSocket) {
         globalSocket.off('roomState');
         globalSocket.off('error');
-        globalSocket.off('disconnect');
         globalSocket.emit('leaveRoom', roomId);
       }
       setIsDataReady(false);
       setJoinAttempts(0);
     };
-  }, [user, globalSocket, isGlobalSocketConnected, roomId]);
+  }, [user, globalSocket, roomId]);
 
   // Handle player movement
   const handlePlayerMove = useCallback((newPosition) => {

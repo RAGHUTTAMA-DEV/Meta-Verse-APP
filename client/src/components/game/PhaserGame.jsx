@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Phaser from 'phaser';
 import MainScene from './scenes/MainScene';
 
@@ -6,6 +6,18 @@ const PhaserGame = ({ roomState, socket, user }) => {
   const gameRef = useRef(null);
   const sceneRef = useRef(null);
   const [isInitialized, setIsInitialized] = useState(false);
+
+  // Define handleResize as a useCallback
+  const handleResize = useCallback(() => {
+    if (gameRef.current) {
+      const container = document.getElementById('phaser-game');
+      if (container) {
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        gameRef.current.scale.resize(width, height);
+      }
+    }
+  }, []);
 
   // Validate required props
   useEffect(() => {
@@ -170,18 +182,7 @@ const PhaserGame = ({ roomState, socket, user }) => {
     try {
       gameRef.current = new Phaser.Game(config);
       
-      // Handle window resize
-      const handleResize = () => {
-        if (gameRef.current) {
-          const container = document.getElementById('phaser-game');
-          if (container) {
-            const width = container.clientWidth;
-            const height = container.clientHeight;
-            gameRef.current.scale.resize(width, height);
-          }
-        }
-      };
-
+      // Add resize listener
       window.addEventListener('resize', handleResize);
       
       // Wait for the scene to be created and ready
