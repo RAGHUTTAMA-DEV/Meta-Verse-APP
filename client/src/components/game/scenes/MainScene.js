@@ -102,7 +102,7 @@ export default class MainScene extends Phaser.Scene {
   }
 
   createEnvironment() {
-    // Create room objects if we have room state
+
     if (this.roomState && this.roomState.objects) {
       try {
         this.roomObjects = new RoomObjects(this, this.roomState.objects);
@@ -113,7 +113,6 @@ export default class MainScene extends Phaser.Scene {
   }
 
   createPlayer() {
-    // Create player at initial position or center of screen
     const startX = this.roomState?.objects?.spawnPoint?.x || 400;
     const startY = this.roomState?.objects?.spawnPoint?.y || 300;
 
@@ -132,19 +131,13 @@ export default class MainScene extends Phaser.Scene {
       timestamp: new Date().toISOString()
     });
 
-    // Clear existing objects
     this.clearScene();
     
-    // Recreate everything if we have required data
     if (this.roomState && this.user) {
       try {
-        // Create environment first
         this.createEnvironment();
-        
-        // Then create player
         this.createPlayer();
         
-        // Finally set up socket handlers
         this.setupSocketHandlers();
         
         console.log('Scene refreshed successfully', {
@@ -172,7 +165,6 @@ export default class MainScene extends Phaser.Scene {
       timestamp: new Date().toISOString()
     });
 
-    // Destroy player
     if (this.player) {
       try {
         this.player.sprite.destroy();
@@ -183,7 +175,6 @@ export default class MainScene extends Phaser.Scene {
       this.player = null;
     }
     
-    // Destroy remote players
     for (const [id, player] of this.remotePlayers.entries()) {
       try {
         player.sprite.destroy();
@@ -194,7 +185,6 @@ export default class MainScene extends Phaser.Scene {
     }
     this.remotePlayers.clear();
     
-    // Destroy room objects
     if (this.roomObjects) {
       try {
         this.roomObjects.destroy();
@@ -205,15 +195,12 @@ export default class MainScene extends Phaser.Scene {
     }
   }
 
-  preload() {
-    // No external assets needed for now
-  }
+  preload() {  }
 
   create() {
-    // Draw a light gray background
+
     this.add.rectangle(0, 0, 800, 600, 0xf7fafc).setOrigin(0, 0);
-    
-    // Draw grid
+  
     const grid = this.add.graphics();
     grid.lineStyle(1, 0xcccccc, 0.5);
     for (let x = 0; x <= 800; x += 20) {
@@ -226,7 +213,6 @@ export default class MainScene extends Phaser.Scene {
     }
     grid.strokePath();
 
-    // Debug text
     this.debugText = this.add.text(10, 10, '', {
       fontFamily: 'Arial',
       fontSize: 14,
@@ -236,7 +222,6 @@ export default class MainScene extends Phaser.Scene {
     });
     this.debugText.setDepth(1000);
 
-    // Controls
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.W,
@@ -245,21 +230,19 @@ export default class MainScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D
     });
 
-    // Mark scene as ready after a short delay to ensure everything is initialized
+ 
     this.time.delayedCall(100, () => {
       this.isReady = true;
-      // Create initial scene state if we have all required data
       if (this.roomState && this.socket && this.user) {
         this.refreshScene();
       }
     });
 
-    // Listen for scene updates
     this.events.on('updateData', this.updateSceneData, this);
   }
 
   setupSocketHandlers() {
-    // Listen for connection status changes
+ 
     this.events.on('connectionStatusChanged', (isConnected) => {
       console.log('Connection status changed:', {
         isConnected,
@@ -268,10 +251,8 @@ export default class MainScene extends Phaser.Scene {
       });
       this.isConnected = isConnected;
       
-      // Update debug text immediately
       this.updateDebugText();
       
-      // If disconnected, show a message
       if (!isConnected) {
         this.showConnectionMessage('Disconnected from server. Attempting to reconnect...');
       } else {
@@ -279,17 +260,16 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle room state updates
     this.events.on('updateRemotePlayers', (remoteParticipants) => {
       if (!this.isConnected) return;
 
       remoteParticipants.forEach(p => {
         if (!this.remotePlayers.has(p.user._id)) {
-          // Create new remote player
+
           const remotePlayer = new PlayerSprite(this, p.position.x, p.position.y, p.user);
           this.remotePlayers.set(p.user._id, remotePlayer);
         } else {
-          // Update existing remote player with smooth movement
+
           const remotePlayer = this.remotePlayers.get(p.user._id);
           this.tweens.add({
             targets: [remotePlayer.sprite, remotePlayer.label],
@@ -304,7 +284,6 @@ export default class MainScene extends Phaser.Scene {
         }
       });
 
-      // Remove players who left
       const currentPlayerIds = new Set(remoteParticipants.map(p => p.user._id));
       for (const [id, player] of this.remotePlayers.entries()) {
         if (!currentPlayerIds.has(id)) {
@@ -315,7 +294,6 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle individual player movement updates
     this.events.on('playerMoved', (data) => {
       if (!this.isConnected) return;
 
@@ -335,7 +313,6 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    // Handle player join/leave events
     this.events.on('playerJoined', (data) => {
       if (!this.isConnected) return;
 
@@ -380,16 +357,13 @@ export default class MainScene extends Phaser.Scene {
   update(time, delta) {
     if (!this.player || !this.player.sprite || !this.isConnected) return;
 
-    // Update local player movement
-    const speed = this.playerSpeed * (delta / 1000); // Convert to pixels per frame
-    let dx = 0, dy = 0;
+    const speed = this.playerSpeed * (delta / 1000); 
 
     if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= speed;
     if (this.cursors.right.isDown || this.wasd.right.isDown) dx += speed;
     if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= speed;
     if (this.cursors.down.isDown || this.wasd.down.isDown) dy += speed;
 
-    // Normalize diagonal movement
     if (dx !== 0 && dy !== 0) {
       const factor = 1 / Math.sqrt(2);
       dx *= factor;
@@ -397,13 +371,11 @@ export default class MainScene extends Phaser.Scene {
     }
 
     if (dx !== 0 || dy !== 0) {
-      // Update local player position
       this.player.sprite.x += dx;
       this.player.sprite.y += dy;
       this.player.label.x = this.player.sprite.x;
       this.player.label.y = this.player.sprite.y - (this.player.radius + 4);
 
-      // Send position update to server
       if (this.network) {
         this.network.sendPlayerUpdate({
           x: this.player.sprite.x,
@@ -412,7 +384,6 @@ export default class MainScene extends Phaser.Scene {
       }
     }
 
-    // Update debug text
     this.updateDebugText();
   }
 
@@ -437,7 +408,6 @@ export default class MainScene extends Phaser.Scene {
   }
 
   shutdown() {
-    // Remove event listeners
     this.events.off('updateData', this.updateSceneData, this);
     this.events.off('connectionStatusChanged');
     this.events.off('updateRemotePlayers');
@@ -445,16 +415,12 @@ export default class MainScene extends Phaser.Scene {
     this.events.off('playerJoined');
     this.events.off('playerLeft');
     
-    // Clean up scene
     this.clearScene();
-    
-    // Clean up network manager
     if (this.network) {
       this.network.destroy();
       this.network = null;
     }
 
-    // Hide connection message
     this.hideConnectionMessage();
   }
 }
