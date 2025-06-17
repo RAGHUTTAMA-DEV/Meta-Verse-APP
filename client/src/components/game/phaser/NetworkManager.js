@@ -1,6 +1,5 @@
 export default class NetworkManager {
   constructor(scene, socket, user) {
-    // Validate required data
     if (!user || !user._id) {
       console.error('NetworkManager: Invalid user data', { user });
       throw new Error('NetworkManager requires valid user data');
@@ -10,7 +9,7 @@ export default class NetworkManager {
     this.socket = socket;
     this.user = user;
     this.lastUpdateTime = 0;
-    this.updateThrottle = 50; // ms between updates
+    this.updateThrottle = 50;
     this.isDestroyed = false;
 
     if (this.socket) {
@@ -64,24 +63,19 @@ export default class NetworkManager {
       }
 
       try {
-        // Filter out current user from remote players with more defensive checks
         const remoteParticipants = state.participants.filter(p => {
-          // Skip if participant is null/undefined
           if (!p) return false;
           
-          // Skip if user data is missing
           if (!p.user) {
             console.warn('NetworkManager: Participant missing user data', { participant: p });
             return false;
           }
           
-          // Skip if user ID is missing
           if (!p.user._id) {
             console.warn('NetworkManager: Participant missing user ID', { participant: p });
             return false;
           }
           
-          // Skip if it's the current user
           if (p.user._id === this.user._id) return false;
           
           // Skip if position is missing
@@ -105,14 +99,11 @@ export default class NetworkManager {
         });
       }
     });
-
-    // Listen for individual player updates (for smoother movement)
     this.socket.on('playerMoved', (data) => {
       if (!data || !data.userId || data.userId === this.user._id) return;
       this.scene.events.emit('playerMoved', data);
     });
 
-    // Listen for player joined/left events
     this.socket.on('playerJoined', (data) => {
       if (!data || !data.user || !data.user._id || data.user._id === this.user._id) return;
       this.scene.events.emit('playerJoined', data);
@@ -132,7 +123,6 @@ export default class NetworkManager {
     this.lastUpdateTime = now;
 
     try {
-      // Send both absolute position and velocity for smoother movement
       this.socket.emit('userMove', {
         position,
         timestamp: now
@@ -145,13 +135,10 @@ export default class NetworkManager {
       });
     }
   }
-
-  // Clean up socket listeners when scene is destroyed
   destroy() {
     this.isDestroyed = true;
     
     if (this.socket) {
-      // Remove all event listeners
       this.socket.off('connect');
       this.socket.off('disconnect');
       this.socket.off('connect_error');
@@ -161,7 +148,6 @@ export default class NetworkManager {
       this.socket.off('playerLeft');
     }
 
-    // Clear references
     this.socket = null;
     this.scene = null;
     this.user = null;
